@@ -39,7 +39,8 @@ jobs:
         run: |
           curl -fsSL "https://mirrors.edge.kernel.org/pub/software/scm/git/git-$GIT_VERSION.tar.gz" | tar xz
           cd "git-$GIT_VERSION"
-          make -j4 prefix="$HOME/old-git" NO_CURL=1 NO_EXPAT=1 NO_GETTEXT=1 NO_TCLTK=1 NO_PERL=1 NO_PYTHON=1 NO_OPENSSL=1 install >/dev/null
+          # -std=gnu99: today's compilers default to C23, where thread_local, a name git 2.17 uses, is a keyword.
+          make -j4 prefix="$HOME/old-git" CFLAGS="-O2 -std=gnu99" NO_CURL=1 NO_EXPAT=1 NO_GETTEXT=1 NO_TCLTK=1 NO_PERL=1 NO_PYTHON=1 NO_OPENSSL=1 install >/dev/null
       - run: echo "$HOME/old-git/bin" >> "$GITHUB_PATH"
       - run: git --version
       - run: npm ci
