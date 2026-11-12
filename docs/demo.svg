@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="556" viewBox="0 0 920 556" role="img" aria-label="git-rescue finding two lost commits after a reset --hard, keeping them on a branch, and finding a lost staged file">
+<style>
+  .bg { fill: #14161a; } .bar { fill: #1d2026; }
+  text { font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; fill: #d7dae0; white-space: pre; }
+  .p { fill: #7ee787; } .cmd { fill: #ffffff; font-weight: 600; }
+  .warn { fill: #f0c674; } .bad { fill: #ff7b72; } .ok { fill: #7ee787; } .info { fill: #8b949e; } .code { fill: #79c0ff; } .dim { fill: #a5adba; }
+  .l { opacity: 0; animation: show .01s linear forwards; }
+  .type { clip-path: inset(0 100% 0 0); animation-name: type; animation-fill-mode: forwards; animation-timing-function: steps(var(--n)); }
+  @keyframes show { to { opacity: 1; } }
+  @keyframes type { to { clip-path: inset(0 -25% 0 0); } } /* past the end: a stepped animation stops a character short */
+  @media (prefers-reduced-motion: reduce) { .l { animation: none; opacity: 1; } .type { animation: none; clip-path: none; } }
+</style>
+<rect class="bg" width="920" height="556" rx="10"/>
+<rect class="bar" width="920" height="28" rx="10"/><rect class="bar" y="18" width="920" height="10"/>
+<circle cx="18" cy="14" r="5.5" fill="#ff5f57"/><circle cx="36" cy="14" r="5.5" fill="#febc2e"/><circle cx="54" cy="14" r="5.5" fill="#28c840"/>
+<text x="460" y="18" text-anchor="middle" class="info">~/app</text>
+<g class="l" style="animation-delay:0.90s"><text x="18" y="44" class="p">$</text><text x="34" y="44" class="cmd"><tspan class="type" style="animation-delay:0.90s;animation-duration:1.23s;--n:35">git reset --hard HEAD~2      # oops</tspan></text></g>
+<g class="l" style="animation-delay:2.98s"><text x="18" y="63" class="p">$</text><text x="34" y="63" class="cmd"><tspan class="type" style="animation-delay:2.98s;animation-duration:0.40s;--n:10">git-rescue</tspan></text></g>
+<text x="18" y="82" class="l " style="animation-delay:3.69s" xml:space="preserve">~/app: on main, nothing uncommitted</text>
+<text x="18" y="101" class="l " style="animation-delay:3.76s" xml:space="preserve"></text>
+<text x="18" y="120" class="l warn" style="animation-delay:3.83s" xml:space="preserve">! 1. 2 commits fell off main with a reset (moving to HEAD~2) just now</text>
+<text x="18" y="139" class="l " style="animation-delay:3.90s" xml:space="preserve">     main was at f29fda36 before; no branch has these commits now:</text>
+<text x="18" y="158" class="l dim" style="animation-delay:3.97s" xml:space="preserve">       f29fda36  parser handles escapes</text>
+<text x="18" y="177" class="l dim" style="animation-delay:4.04s" xml:space="preserve">       b7fbaf5d  parser handles quotes</text>
+<text x="18" y="196" class="l ok" style="animation-delay:4.11s" xml:space="preserve">     a) Keep them on a new branch "rescued/main-before-reset-f29fda36" (main stays as it is)  [safe]</text>
+<text x="18" y="215" class="l code" style="animation-delay:4.18s" xml:space="preserve">          git branch rescued/main-before-reset-f29fda36 f29fda36d58e679fc8991f2c6bd2415b6a1751b4</text>
+<text x="18" y="234" class="l warn" style="animation-delay:4.25s" xml:space="preserve">     b) Put main back where it was (f29fda36)  [careful]</text>
+<text x="18" y="253" class="l code" style="animation-delay:4.33s" xml:space="preserve">          git checkout main</text>
+<text x="18" y="272" class="l code" style="animation-delay:4.40s" xml:space="preserve">          git reset --keep f29fda36d58e679fc8991f2c6bd2415b6a1751b4</text>
+<text x="18" y="291" class="l " style="animation-delay:4.47s" xml:space="preserve"></text>
+<text x="18" y="310" class="l info" style="animation-delay:4.54s" xml:space="preserve">· 2. 1 file version that you added (staged) but never committed</text>
+<text x="18" y="329" class="l " style="animation-delay:4.61s" xml:space="preserve">     What `git add` saved before a `reset --hard`, `checkout .` or `stash`, or an earlier version of</text>
+<text x="18" y="348" class="l " style="animation-delay:4.68s" xml:space="preserve">     a file you added again. git keeps the contents, not the names:</text>
+<text x="18" y="367" class="l dim" style="animation-delay:4.75s" xml:space="preserve">       169672f8  just now        TODO: call the bank about the invoice</text>
+<text x="18" y="386" class="l " style="animation-delay:4.82s" xml:space="preserve">     a) Save one to a new file  [you do it]</text>
+<text x="18" y="405" class="l " style="animation-delay:4.89s" xml:space="preserve"></text>
+<g class="l" style="animation-delay:5.69s"><text x="18" y="424" class="p">$</text><text x="34" y="424" class="cmd"><tspan class="type" style="animation-delay:5.69s;animation-duration:0.81s;--n:23">git-rescue fix 1a --yes</tspan></text></g>
+<text x="18" y="443" class="l ok" style="animation-delay:6.81s" xml:space="preserve">   ✓ git branch rescued/main-before-reset-f29fda36 f29fda36d58e679fc8991f2c6bd2415b6a1751b4</text>
+<text x="18" y="462" class="l " style="animation-delay:6.88s" xml:space="preserve">Done. `git-rescue undo` puts things back as they were before.</text>
+<g class="l" style="animation-delay:7.68s"><text x="18" y="481" class="p">$</text><text x="34" y="481" class="cmd"><tspan class="type" style="animation-delay:7.68s;animation-duration:0.81s;--n:23">git-rescue find invoice</tspan></text></g>
+<text x="18" y="500" class="l " style="animation-delay:8.81s" xml:space="preserve">  169672f8  a file you staged and never committed, line 1</text>
+<text x="18" y="519" class="l " style="animation-delay:8.88s" xml:space="preserve">      TODO: call the bank about the invoice</text>
+</svg>

@@ -159,3 +159,13 @@ That last test found the one regression of the round: 0.4's check of the backup 
 **Tests**: 101 (+3). CI: Windows, macOS and Linux on Node 18 and 24, and git 2.17.0.
 
 **Done after five rounds.** Rounds 1 and 4 were independent reviews (15 and 22 findings). Each found what my own rounds had not: an "abandon" that destroyed conflict work, undo that wiped later commits, squash rebases reported as losses. Round 3's matrix runs every option of every finding and undoes it. Left for later, in the README's terms: a change kept only on a branch outside the 30 most recently changed is still reported (a false alarm, never a missed loss); submodules are checked one at a time.
+
+## Presentation — 2026-11-12
+
+Not a polishing round: the first screen and the launch, ahead of promoting it (the plan in PROGRESS.md puts git-rescue first).
+
+- **An animated terminal at the top of the README** (`docs/demo.svg`), made by `scripts/demo-svg.mjs` from real output: the accident is staged in a new repository under the temp folder, git-rescue is run on it, and its output is played back (commands typed, output line by line, under 10 s; still for people who ask for reduced motion). One flaw seen in the browser: Chrome's last step of a stepped animation stopped a character short (`--ye`); the reveal now runs past the end.
+- **The first screen** says the value in one line ("Messed up git? Get your work back."), then the demo, then the one-liner, then four reasons, each a fact the tests or the reviews back. One claim was toned down before it went in: "`undo` takes any fix back" is not true after an abandoned rebase; now "puts back what a fix changed".
+- **A social preview image** (`docs/social-preview.png`, 1280×640, from `scripts/social-card.html` with headless Chrome). It has to be uploaded in the repository's settings on the website.
+- The npm package lists only `docs/COMPATIBILITY.md` from `docs/`, not the images.
+- Launch drafts (Show HN, Reddit, V2EX, 掘金, X and 即刻, answers for the first 48 hours) are kept outside the repository. The npm name `git-rescue` is free; whether to publish is the owner's call.

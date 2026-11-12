@@ -2,67 +2,36 @@
 
 # git-rescue
 
-**我的 git 仓库刚才怎么了？我的代码怎么找回来？** 一条命令查看仓库的状态，告诉你哪里出了问题，以及能直接运行的修复命令。它还能找回 reflog 看不到的东西：被 `reset --hard` 弄丢的已暂存文件、被丢掉的 stash。每次修复之前都会先备份。
+### git 搞砸了？把你的代码找回来。
+
+一条命令读懂你的仓库，用大白话告诉你出了什么问题，并给出能直接运行的修复命令。改动任何东西之前都会先完整备份，`git-rescue undo` 可以撤回修复改动的东西。它还能找回 reflog 看不到的东西：被 `reset --hard` 弄丢的已暂存文件、被丢掉的 stash。
 
 <a href="https://github.com/zch6a/git-rescue/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/zch6a/git-rescue/actions/workflows/ci.yml/badge.svg"></a>
 <img alt="Node 18+" src="https://img.shields.io/badge/node-18%2B-339933?logo=node.js&logoColor=white">
+<img alt="git 2.17+" src="https://img.shields.io/badge/git-2.17%2B-f05032?logo=git&logoColor=white">
 <img alt="无依赖" src="https://img.shields.io/badge/dependencies-none-2ea44f">
 <a href="LICENSE"><img alt="MIT 许可证" src="https://img.shields.io/badge/license-MIT-blue"></a>
 
 [English](README.md) · **简体中文**
 
+<br>
+
+<img src="docs/demo.svg" width="860" alt="git-rescue 在 reset --hard 之后：找到两个丢失的提交和一个丢失的已暂存文件，一条命令把提交保存到新分支，再按文字找到那个文件">
+
 </div>
 
----
-
 ```bash
-npx github:zch6a/git-rescue
+npx github:zch6a/git-rescue        # 在出问题的仓库里运行；你同意之前它什么都不改
 ```
 
-在执行了 `reset --hard HEAD~2`、用 `-D` 删了一个分支、又弄丢了一个已暂存的文件之后（输出是英文的）：
+（演示和报告的输出是英文的。）
 
-```text
-~/projects/app: on main, nothing uncommitted
+## 为什么用 git-rescue
 
-! 1. Branch "experiment" was deleted with 1 commit no other branch has
-     Its last commit seen was e65f82b2, when you left it 5 minutes ago:
-       e65f82b2  try a faster tokenizer
-     (Commits it got from another worktree or a `branch -f` are not in this list; `git-rescue lost`
-     shows them.)
-     a) Bring "experiment" back  [safe]
-          git branch experiment e65f82b21596f06afa270587322b7f9d0be37c82
-
-! 2. 2 commits fell off main with a reset (moving to HEAD~2) just now
-     main was at 39f66d49 before; no branch has these commits now:
-       39f66d49  parser handles escapes
-       3b48736b  parser handles quotes
-     a) Keep them on a new branch "rescued/main-before-reset-39f66d49" (main stays as it is)  [safe]
-          git branch rescued/main-before-reset-39f66d49 39f66d49115fc9fa67247b8e5d6a2c0d96e4b888
-     b) Put main back where it was (39f66d49)  [careful]
-          git checkout main
-          git reset --keep 39f66d49115fc9fa67247b8e5d6a2c0d96e4b888
-          --keep refuses to run if it would overwrite changes you have not committed; git-rescue
-          backs them up first anyway.
-
-· 3. 1 file version that you added (staged) but never committed
-     What `git add` saved before a `reset --hard`, `checkout .` or `stash`, or an earlier version of
-     a file you added again. git keeps the contents, not the names:
-       169672f8  just now        TODO: call the bank about the invoice
-     a) Save one to a new file  [you do it]
-          (git-rescue restore <id> <new-file-name>)
-          `git-rescue find "some text"` searches them all.
-
-Fix one? Type its number and letter (like 1a), or press Enter to leave everything as it is:
-```
-
-```text
-$ git-rescue find invoice
-  169672f8  a file you staged and never committed, line 1
-      TODO: call the bank about the invoice
-
-$ git-rescue restore 169672f8 notes.md
-Saved the file (38 bytes) to notes.md.
-```
+- **读的是实际发生的事，不靠猜。** 每一条都是仓库里确实存在的情况（一条 reflog 记录、rebase 做到一半留下的文件、没有任何东西指向的对象），并列出涉及的提交和它们的标题。
+- **能找回 reflog 看不到的东西。** 你 `git add` 过的每个文件，git 都存了一份；`reset --hard` 或 `checkout .` 之后，大约两周内还在。被丢掉的 stash 也一样。`git-rescue find "某段文字"` 能在里面搜索。
+- **放心试。** 你选一个选项并同意之前什么都不改；改之前先备份所有分支、HEAD 和没提交的修改；`git-rescue undo` 精确撤回这次修复改动的东西。测试会把每种问题的每个选项都真跑一遍再撤销，覆盖 git 2.17 到最新版、Windows/macOS/Linux。
+- **平时不打扰。** rebase、squash、`stash pop`、squash 合并都不算丢失，也不会被报成丢失。两次独立审查专门找过误报。
 
 ## 能发现什么
 

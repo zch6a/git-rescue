@@ -1,0 +1,43 @@
+<!doctype html>
+<!-- The repository's social preview (1280×640), rendered by scripts/social-card.mjs with headless Chrome. -->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; width: 1280px; height: 640px; overflow: hidden; }
+  body { background: radial-gradient(1200px 700px at 15% 10%, #2a1f3d 0%, #121318 55%, #0d0e12 100%); color: #e8e6e3;
+    font-family: "Segoe UI", -apple-system, system-ui, sans-serif; display: grid; grid-template-columns: 520px 1fr; gap: 40px; padding: 72px 72px; box-sizing: border-box; }
+  h1 { font-size: 76px; margin: 0 0 18px; letter-spacing: -1.5px; }
+  h1 span { color: #ff7b72; }
+  .tag { font-size: 34px; line-height: 1.25; margin: 0 0 28px; font-weight: 600; }
+  .sub { font-size: 21px; line-height: 1.45; color: #b9b6b0; margin: 0 0 34px; }
+  .cmd { font: 22px Consolas, ui-monospace, monospace; background: #1e2128; border: 1px solid #343842; border-radius: 10px; padding: 14px 18px; display: inline-block; color: #fff; }
+  .cmd b { color: #7ee787; font-weight: 400; }
+  .term { background: #14161a; border: 1px solid #2b2f37; border-radius: 14px; padding: 18px 22px 22px; font: 17px/1.62 Consolas, ui-monospace, monospace; white-space: pre; align-self: center; box-shadow: 0 30px 80px rgba(0,0,0,.45); }
+  .dots { margin-bottom: 10px; } .dots i { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 7px; }
+  .p { color: #7ee787; } .w { color: #f0c674; } .ok { color: #7ee787; } .c { color: #79c0ff; } .d { color: #8b949e; } .wh { color: #fff; font-weight: 600; }
+</style>
+</head>
+<body>
+  <div>
+    <h1>git<span>-</span>rescue</h1>
+    <p class="tag">Messed up git?<br>Get your work back.</p>
+    <p class="sub">Says what went wrong in plain words, with the exact commands that fix it. Backs up first. Finds staged files lost to <code>reset --hard</code>.</p>
+    <div class="cmd"><b>$</b> npx github:zch6a/git-rescue</div>
+  </div>
+  <div class="term"><div class="dots"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></div><span class="p">$</span> <span class="wh">git reset --hard HEAD~2</span>   <span class="d"># oops</span>
+<span class="p">$</span> <span class="wh">git-rescue</span>
+
+<span class="w">! 1. 2 commits fell off main with a reset</span>
+       d1cdd9d3  parser handles escapes
+       3418468f  parser handles quotes
+     <span class="ok">a) Keep them on a new branch   [safe]</span>
+     <span class="w">b) Put main back where it was [careful]</span>
+
+<span class="d">· 2. 1 file you staged but never committed</span>
+       169672f8  TODO: call the bank about…
+
+<span class="p">$</span> <span class="wh">git-rescue fix 1a --yes</span>
+   <span class="ok">✓ git branch rescued/main-before-reset-d1cdd9d3</span></div>
+</body>
+</html>

@@ -31,7 +31,7 @@
     "README.md",
     "README.zh-CN.md",
     "CHANGELOG.md",
-    "docs",
+    "docs/COMPATIBILITY.md",
     "LICENSE"
   ],
   "engines": {

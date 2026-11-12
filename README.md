@@ -2,71 +2,42 @@
 
 # git-rescue
 
-**What just happened to my git repository, and how do I get my work back?** One command looks at the
-repository's state and says what is wrong, with the exact commands that fix it. It finds what the reflog
-cannot: files you staged and lost to `reset --hard`, dropped stashes. And it backs up before every fix.
+### Messed up git? Get your work back.
+
+One command reads your repository and says what went wrong, in plain words, with the exact commands that fix
+it. It backs up everything before it changes anything, and `git-rescue undo` puts back what a fix changed. It finds
+what the reflog cannot: files you staged and lost to `reset --hard`, and stashes you dropped.
 
 <a href="https://github.com/zch6a/git-rescue/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/zch6a/git-rescue/actions/workflows/ci.yml/badge.svg"></a>
 <img alt="Node 18+" src="https://img.shields.io/badge/node-18%2B-339933?logo=node.js&logoColor=white">
+<img alt="git 2.17+" src="https://img.shields.io/badge/git-2.17%2B-f05032?logo=git&logoColor=white">
 <img alt="No dependencies" src="https://img.shields.io/badge/dependencies-none-2ea44f">
 <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-blue"></a>
 
 **English** · [简体中文](README.zh-CN.md)
 
+<br>
+
+<img src="docs/demo.svg" width="860" alt="git-rescue after a reset --hard: it finds the two lost commits and a lost staged file, keeps the commits on a branch with one command, and finds the file by its text">
+
 </div>
 
----
-
 ```bash
-npx github:zch6a/git-rescue
+npx github:zch6a/git-rescue        # run it in the repository that is in trouble; it changes nothing until you say yes
 ```
 
-After a `reset --hard HEAD~2`, deleting a branch with `-D`, and losing a staged file:
+## Why git-rescue
 
-```text
-~/projects/app: on main, nothing uncommitted
-
-! 1. Branch "experiment" was deleted with 1 commit no other branch has
-     Its last commit seen was e65f82b2, when you left it 5 minutes ago:
-       e65f82b2  try a faster tokenizer
-     (Commits it got from another worktree or a `branch -f` are not in this list; `git-rescue lost`
-     shows them.)
-     a) Bring "experiment" back  [safe]
-          git branch experiment e65f82b21596f06afa270587322b7f9d0be37c82
-
-! 2. 2 commits fell off main with a reset (moving to HEAD~2) just now
-     main was at 39f66d49 before; no branch has these commits now:
-       39f66d49  parser handles escapes
-       3b48736b  parser handles quotes
-     a) Keep them on a new branch "rescued/main-before-reset-39f66d49" (main stays as it is)  [safe]
-          git branch rescued/main-before-reset-39f66d49 39f66d49115fc9fa67247b8e5d6a2c0d96e4b888
-     b) Put main back where it was (39f66d49)  [careful]
-          git checkout main
-          git reset --keep 39f66d49115fc9fa67247b8e5d6a2c0d96e4b888
-          --keep refuses to run if it would overwrite changes you have not committed; git-rescue
-          backs them up first anyway.
-
-· 3. 1 file version that you added (staged) but never committed
-     What `git add` saved before a `reset --hard`, `checkout .` or `stash`, or an earlier version of
-     a file you added again. git keeps the contents, not the names:
-       169672f8  just now        TODO: call the bank about the invoice
-     a) Save one to a new file  [you do it]
-          (git-rescue restore <id> <new-file-name>)
-          `git-rescue find "some text"` searches them all.
-
-Fix one? Type its number and letter (like 1a), or press Enter to leave everything as it is:
-```
-
-```text
-$ git-rescue find invoice
-"invoice" in lost work:
-
-  169672f8  a file you staged and never committed, line 1
-      TODO: call the bank about the invoice
-
-$ git-rescue restore 169672f8 notes.md
-Saved the file (38 bytes) to notes.md.
-```
+- **It reads what happened, not guesses.** Each finding is a fact about your repository (a reflog entry, a file
+  git left mid-rebase, an object nothing points to), with the commits it concerns and their subjects.
+- **It finds what the reflog cannot.** `git add` saved a copy of every file you staged; after `reset --hard` or
+  `checkout .`, git still has them for about two weeks. Dropped stashes too. `git-rescue find "some text"` searches
+  all of it.
+- **It is safe to try.** Nothing changes until you pick an option and say yes; every branch, HEAD and your
+  uncommitted work are backed up first; `git-rescue undo` puts back exactly what the fix changed. Tested by
+  running every option of every finding and undoing it, on git 2.17 to today's, on Windows, macOS and Linux.
+- **It is quiet on ordinary days.** A rebase, a squash, a `stash pop`, a squash merge: none of these is a loss,
+  and none is reported as one. Two independent reviews hunted for false alarms.
 
 ## What it finds
 
