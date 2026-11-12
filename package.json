@@ -1,0 +1,46 @@
+{
+  "name": "git-rescue",
+  "version": "0.1.0",
+  "description": "What just happened to my git repository, and how do I get my work back? Diagnoses half-done rebases and merges, lost commits, deleted branches, dropped stashes and staged files lost to reset --hard, and backs up before every fix. Local, zero dependencies.",
+  "keywords": [
+    "git",
+    "undo",
+    "recover",
+    "reflog",
+    "rescue",
+    "lost-commits",
+    "stash",
+    "cli"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zch6a/git-rescue.git"
+  },
+  "homepage": "https://github.com/zch6a/git-rescue#readme",
+  "bugs": {
+    "url": "https://github.com/zch6a/git-rescue/issues"
+  },
+  "type": "module",
+  "bin": {
+    "git-rescue": "bin/git-rescue.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test",
+    "check": "tsc --noEmit -p jsconfig.json"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "@types/node": "^22.0.0"
+  }
+}
