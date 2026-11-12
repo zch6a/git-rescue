@@ -19,7 +19,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-import { branches, commitInfo, git, gitRun, keepers, readObjects, refs, reflog, resolve, short, unreachableFromRefs, unreachableObjects, worktrees } from "./git.js";
+import { branches, commitInfo, git, gitOk, gitRun, keepers, objectSizes, objectTime, readObjects, refs, reflog, resolve, samePath, short, toplevel, unreachableFromRefs, unreachableObjects, worktrees } from "./git.js";
 import { describe } from "./timeline.js";
 
 /**
@@ -57,6 +57,12 @@ export function state(cwd, repo) {
   else if (existsSync(g("BISECT_LOG"))) operation = "bisect";
   const files = repo.bare ? [] : statusEntries(cwd);
   const lock = join(repo.gitDir, "index.lock");
+  // A submodule: the repository it is part of (git 2.13+), and the submodules this one has.
+  const superproject = repo.bare ? "" : git(cwd, ["rev-parse", "--show-superproject-working-tree"], { allowFail: true }).trim();
+  const top = repo.bare ? "" : toplevel(cwd);
+  const submodules = top && existsSync(join(top, ".gitmodules"))
+    ? git(top, ["config", "--file", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"], { allowFail: true }).split("\n").map((l) => l.replace(/^\S+ /, "")).filter(Boolean)
+    : [];
   return {
     branch: head.startsWith("refs/heads/") ? head.slice("refs/heads/".length) : null,
     headSha,
@@ -67,6 +73,8 @@ export function state(cwd, repo) {
     changed: files.filter((f) => f.xy !== "??").length,
     untracked: files.filter((f) => f.xy === "??").length,
     lockAge: existsSync(lock) ? Date.now() - statSync(lock).mtimeMs : null,
+    superproject: superproject || null,
+    submodules,
   };
 }
 
@@ -112,13 +120,13 @@ export function diagnose(cwd, repo) {
 
   inProgress(cwd, repo, st, ctx.add);
   if (st.lockAge !== null) staleLock(st.lockAge, ctx.add);
-  if (!st.branch && st.headSha && !st.operation) detached(ctx, st.headSha);
+  if (!st.branch && st.headSha && !st.operation) detached(ctx, st.headSha, st.superproject);
   deletedBranches(ctx);
   rewound(ctx);
   movedAwayOnHead(ctx, st);
   const objs = lostObjects(cwd, keep);
   droppedStashes(cwd, objs, ctx.add, st);
-  lostStaged(cwd, objs, ctx.add);
+  lostStaged(cwd, repo, objs, ctx.add);
   upstreamRewritten(cwd, repo, st, ctx.add);
 
   const order = { problem: 0, warning: 1, info: 2 };
@@ -240,8 +248,8 @@ function staleLock(age, add) {
 
 /** @typedef {{cwd: string, repo: Repo, keep: string[], reported: Set<string>, add: (f: Finding) => void, lost: Set<string>}} Ctx */
 
-/** @param {Ctx} ctx @param {string} headSha */
-function detached(ctx, headSha) {
+/** @param {Ctx} ctx @param {string} headSha @param {string | null} superproject */
+function detached(ctx, headSha, superproject) {
   const orphan = ctx.lost.has(headSha) || unreachableFromRefs(ctx.cwd, [headSha], ctx.keep).length ? lostFrom(ctx, headSha, null) : [];
   if (orphan.length) {
     orphan.forEach((c) => ctx.reported.add(c));
@@ -250,9 +258,18 @@ function detached(ctx, headSha) {
       id: "detached-with-commits",
       level: "problem",
       title: `HEAD is detached, with ${orphan.length} commit${orphan.length > 1 ? "s" : ""} on no branch`,
-      detail: `Switching to a branch now would leave ${plural(orphan.length, "commit")} behind (findable only through the reflog, and gone when it expires).`,
+      detail: `Switching to a branch now would leave ${orphan.length > 1 ? "them" : "it"} behind (findable only through the reflog, and gone when it expires):\n${listCommits(ctx.cwd, orphan)}`,
       commits: orphan,
       options: [{ title: `Put them on a new branch "${name}" and switch to it`, risk: "safe", steps: [["branch", name, headSha], ["checkout", name]] }],
+    });
+  } else if (superproject && recordedInSuperproject(ctx.cwd, superproject) === headSha) {
+    // git keeps a submodule's HEAD detached at the commit its parent repository records: that is how it is meant to be.
+    ctx.add({
+      id: "detached",
+      level: "info",
+      title: `HEAD is detached at ${short(headSha)}, the commit ${superproject.replace(/^.*[\\/]/, "")} records for this submodule`,
+      detail: "That is how git leaves a submodule after `git submodule update`. Nothing is at risk; to work on it, switch to a branch first.",
+      options: [],
     });
   } else {
     const on = git(ctx.cwd, ["branch", "--contains", headSha, "--format=%(refname:short)"], { allowFail: true }).split("\n").filter(Boolean);
@@ -264,6 +281,13 @@ function detached(ctx, headSha) {
       options: on.length ? [{ title: `Go back to ${on[0]}`, risk: "safe", steps: [["checkout", on[0]]] }] : [],
     });
   }
+}
+
+/** The commit the parent repository records for this submodule. @param {string} cwd @param {string} superproject */
+function recordedInSuperproject(cwd, superproject) {
+  const path = toplevel(cwd).slice(superproject.length).replace(/^[\\/]+/, "");
+  const line = git(superproject, ["ls-tree", "HEAD", "--", path], { allowFail: true }).trim();
+  return line.match(/^160000 commit ([0-9a-f]{40})\t/)?.[1] ?? null;
 }
 
 /**
@@ -287,7 +311,7 @@ function deletedBranches(ctx) {
       id: "deleted-branch",
       level: "warning",
       title: `Branch "${m[1]}" was deleted with ${plural(lost.length, "commit")} no other branch has`,
-      detail: `Its last commit seen was ${short(tip)}, when you left it ${ago(e.time)}. (A branch can also gain commits without being checked out here, from another worktree or a \`branch -f\`; those show in \`git-rescue lost\`.)`,
+      detail: `Its last commit seen was ${short(tip)}, when you left it ${ago(e.time)}:\n${listCommits(ctx.cwd, lost)}\n(Commits it got from another worktree or a \`branch -f\` are not in this list; \`git-rescue lost\` shows them.)`,
       commits: lost,
       options: [{ title: `Bring "${m[1]}" back`, risk: "safe", steps: [["branch", m[1], tip]] }],
     });
@@ -323,8 +347,8 @@ function rewound(ctx) {
           ? `The commit replaced by \`commit --amend\` on ${branch} ${ago(e.time)} had other changes`
           : `${plural(lost.length, "commit")} fell off ${branch} with ${what} ${ago(e.time)}`,
         detail: amendOnly
-          ? "The amended commit differs from it in more than the message; it is here in case the amend lost something."
-          : `${branch} was at ${short(e.old)} before; no branch has those commits now.`,
+          ? `The amended commit differs from it in more than the message; it is here in case the amend lost something:\n${listCommits(ctx.cwd, lost)}`
+          : `${branch} was at ${short(e.old)} before; no branch has ${lost.length > 1 ? "these commits" : "this commit"} now:\n${listCommits(ctx.cwd, lost)}`,
         commits: lost,
         options: [
           { title: `Keep them on a new branch "${name}" (${branch} stays as it is)`, risk: "safe", steps: [["branch", name, e.old]] },
@@ -364,7 +388,7 @@ function movedAwayOnHead(ctx, st) {
       title: leaving
         ? `${plural(lost.length, "commit")} left behind on a detached HEAD ${ago(e.time)}`
         : `${plural(lost.length, "commit")} dropped while HEAD was detached (${describe(e.message)}) ${ago(e.time)}`,
-      detail: `They were made without a branch, then HEAD moved away. No branch has them.`,
+      detail: `They were made without a branch, then HEAD moved away. No branch has them:\n${listCommits(ctx.cwd, lost)}`,
       commits: lost,
       options: [{ title: `Put them on a new branch "${name}"`, risk: "safe", steps: [["branch", name, e.old]] }],
     });
@@ -399,7 +423,7 @@ export function lostObjects(cwd, keep = keepers(cwd)) {
 
 /** Blobs staged in the indexes of this repository's other worktrees. @param {string} cwd */
 function stagedInOtherWorktrees(cwd) {
-  const here = git(cwd, ["rev-parse", "--show-toplevel"], { allowFail: true }).trim();
+  const here = toplevel(cwd);
   const out = new Set();
   for (const w of worktrees(cwd)) {
     if (!w.path || samePath(w.path, here) || !existsSync(w.path)) continue;
@@ -410,9 +434,6 @@ function stagedInOtherWorktrees(cwd) {
   }
   return out;
 }
-
-/** @param {string} a @param {string} b */
-const samePath = (a, b) => a.replace(/\\/g, "/").toLowerCase() === b.replace(/\\/g, "/").toLowerCase();
 
 /** A stash is a commit "WIP on main: ..." or "On main: ..." with the index as second parent. */
 const STASH = /^(WIP on|On) [^:]+:/;
@@ -425,55 +446,80 @@ const STASH = /^(WIP on|On) [^:]+:/;
 function droppedStashes(cwd, lost, add, st) {
   const stashes = lost.commits.filter((c) => STASH.test(c.subject) && c.parents.length >= 2);
   for (const s of stashes.slice(0, 10)) {
-    if (!st.bare && stashApplied(cwd, s.sha, s.parents[0])) continue;
+    const files = stashFiles(cwd, s.sha, s.parents[0]);
+    if (!st.bare && stashApplied(cwd, s.sha, s.parents[0], files)) continue;
+    const shown = files.slice(0, 5).join(", ") + (files.length > 5 ? ` and ${files.length - 5} more` : "");
     add({
       id: "dropped-stash",
       level: "warning",
       title: `A dropped stash: "${s.subject}"${s.time ? ` (${ago(s.time)})` : ""}`,
-      detail: "It was removed from the stash list (`stash drop`, `stash clear`) without its changes being in your files or commits, but git still has it.",
+      detail: `It changed ${shown || "no files"}. It is off the stash list (\`stash drop\`, \`stash clear\`, or a \`stash pop\` after which you kept editing) and its version of those files is not in your files or commits; git still has it.`,
       commits: [s.sha],
       options: [{ title: "Put it back on the stash list", risk: "safe", steps: [["stash", "store", "-m", `rescued: ${s.subject}`, s.sha]] }],
     });
   }
 }
 
-/** @param {string} cwd @param {string} stash @param {string} base */
-function stashApplied(cwd, stash, base) {
-  const files = git(cwd, ["diff", "--name-only", "-z", base, stash], { allowFail: true }).split("\0").filter(Boolean).slice(0, 50);
-  if (!files.length) return true;
-  for (const f of files) {
-    const wanted = git(cwd, ["rev-parse", "--verify", "--quiet", `${stash}:${f}`], { allowFail: true }).trim();
-    if (!wanted) continue; // the stash deleted it; nothing to look for
-    const candidates = [
-      git(cwd, ["rev-parse", "--verify", "--quiet", `HEAD:${f}`], { allowFail: true }).trim(),
-      git(cwd, ["rev-parse", "--verify", "--quiet", `:${f}`], { allowFail: true }).trim(),
-      existsSync(join(git(cwd, ["rev-parse", "--show-toplevel"], { allowFail: true }).trim(), f)) ? git(cwd, ["hash-object", "--", f], { allowFail: true }).trim() : "",
-    ];
-    if (!candidates.includes(wanted)) return false;
-  }
-  return true;
+/**
+ * Three git calls per stash, whatever the number of files: the files it changed, then the stash's, HEAD's and
+ * the index's version of each in one `cat-file --batch-check` (it takes `rev:path` names), then the working
+ * tree's in one `hash-object` (with the same filters as `git add`).
+ * @param {string} cwd @param {string} stash @param {string} base @param {string[]} [files]
+ */
+function stashApplied(cwd, stash, base, files = stashFiles(cwd, stash, base)) {
+  const names = files.filter((f) => !/[\n\r]/.test(f)).slice(0, 200);
+  if (!names.length) return true;
+  const lines = git(cwd, ["cat-file", "--batch-check=%(objectname)"], { allowFail: true,
+    input: names.flatMap((f) => [`${stash}:${f}`, `HEAD:${f}`, `:${f}`]).join("\n") + "\n" }).split("\n");
+  const id = (/** @type {number} */ i) => (/^[0-9a-f]{40}$/.test(lines[i] ?? "") ? lines[i] : "");
+  const top = toplevel(cwd);
+  const onDisk = names.filter((f) => existsSync(join(top, f)));
+  const hashed = onDisk.length ? git(top, ["hash-object", "--", ...onDisk], { allowFail: true }).split("\n") : [];
+  const disk = new Map(onDisk.map((f, i) => [f, hashed[i]?.trim() ?? ""]));
+  return names.every((f, i) => {
+    const wanted = id(3 * i);
+    if (!wanted) return true; // the stash deleted it; nothing to look for
+    return wanted === id(3 * i + 1) || wanted === id(3 * i + 2) || wanted === disk.get(f);
+  });
+}
+
+/** The files a stash changed. @param {string} cwd @param {string} stash @param {string} base */
+function stashFiles(cwd, stash, base) {
+  return git(cwd, ["diff", "--name-only", "-z", base, stash], { allowFail: true }).split("\0").filter(Boolean);
 }
 
 /**
  * Contents staged and never committed. Not those with conflict markers (git writes the marked-up file of a
  * conflicted merge to the object store); and only information, since `git add` of a file you then edited and
- * added again leaves the first version behind too.
- * @param {string} cwd @param {ReturnType<typeof lostObjects>} lost @param {(f: Finding) => void} add
+ * added again leaves the first version behind too. Only the newest READ are opened (each is a file to open, slow
+ * on Windows when there are thousands); older ones are counted as they are.
+ * @param {string} cwd @param {{commonDir: string}} repo @param {ReturnType<typeof lostObjects>} lost @param {(f: Finding) => void} add
  */
-function lostStaged(cwd, lost, add) {
-  const contents = readObjects(cwd, lost.stagedBlobs, 256 * 1024);
-  const real = lost.stagedBlobs.filter((b) => {
+function lostStaged(cwd, repo, lost, add) {
+  const READ = 300;
+  const byAge = lost.stagedBlobs.map((sha) => ({ sha, time: objectTime(repo, sha) ?? 0 })).sort((a, b) => b.time - a.time);
+  const newest = byAge.slice(0, READ).map((b) => b.sha);
+  const sizes = objectSizes(cwd, newest);
+  const contents = readObjects(cwd, newest, 256 * 1024, sizes);
+  const marked = (/** @type {string} */ b) => {
     const text = contents.get(b)?.toString("utf8") ?? "";
-    return !(/^<<<<<<< /m.test(text) && /^>>>>>>> /m.test(text));
-  });
+    return /^<<<<<<< /m.test(text) && /^>>>>>>> /m.test(text);
+  };
+  const real = byAge.filter((b, i) => i >= READ || !marked(b.sha));
   if (!real.length) return;
+  const lines = real.slice(0, 5).map((b) => {
+    const buf = contents.get(b.sha);
+    const first = !buf ? "" : buf.subarray(0, 8000).includes(0) ? "(binary)" : (buf.toString("utf8").split(/\r?\n/).find((l) => l.trim()) ?? "").trim().slice(0, 70);
+    return `  ${short(b.sha)}  ${(b.time ? ago(b.time) : "").padEnd(15)} ${first}`;
+  });
   add({
     id: "lost-staged-files",
     level: "info",
     title: `${plural(real.length, "file version")} that you added (staged) but never committed`,
-    detail: "What `git add` saved before a `reset --hard`, `checkout .` or `stash`, or an earlier version of a file you added again. git has no names for them, only the contents.",
+    detail: "What `git add` saved before a `reset --hard`, `checkout .` or `stash`, or an earlier version of a file you added again. git keeps the contents, not the names" +
+      `${real.length > 5 ? " (the newest 5; `git-rescue lost` lists all)" : ""}:\n${lines.join("\n")}`,
     options: [
-      { title: "Look at them and save the ones you want", risk: "manual", steps: [["run git-rescue lost to list them"]], note: "`git-rescue find \"some text\"` searches them; `git-rescue restore <id> <file>` saves one." },
+      { title: "Save one to a new file", risk: "manual", steps: [["git-rescue restore <id> <new-file-name>"]], note: "`git-rescue find \"some text\"` searches them all." },
     ],
   });
 }
@@ -489,7 +535,7 @@ function upstreamRewritten(cwd, repo, st, add) {
   if (!forced) return;
   // Only while the branch still has the old history and the new upstream does not: after a rebase onto the
   // new one, or a reset to it, there is nothing left to do.
-  const isAncestor = (/** @type {string} */ a, /** @type {string} */ b) => gitRun(cwd, ["merge-base", "--is-ancestor", a, b]).code === 0;
+  const isAncestor = (/** @type {string} */ a, /** @type {string} */ b) => gitOk(cwd, ["merge-base", "--is-ancestor", a, b]);
   if (!isAncestor(forced.old, st.branch) || isAncestor(forced.old, up)) return;
   const mine = git(cwd, ["rev-list", `${up}..${st.branch}`], { allowFail: true }).split("\n").filter(Boolean);
   const ownSinceOld = git(cwd, ["rev-list", `${forced.old}..${st.branch}`], { allowFail: true }).split("\n").filter(Boolean);
@@ -512,6 +558,17 @@ function upstreamRewritten(cwd, repo, st, add) {
 /** A branch name for rescued commits: what, and the commit, so two findings never propose the same name. @param {string} what @param {string} sha */
 export function rescueName(what, sha) {
   return `rescued/${what.replace(/[^\w.-]+/g, "-")}-${short(sha)}`;
+}
+
+/**
+ * The commits, one per line with id and subject (the newest 5, then how many more), for a finding's detail.
+ * @param {string} cwd @param {string[]} shas
+ */
+function listCommits(cwd, shas) {
+  const info = commitInfo(cwd, shas.slice(0, 5));
+  const lines = shas.slice(0, 5).map((s) => `  ${short(s)}  ${info.get(s)?.subject ?? ""}`);
+  if (shas.length > 5) lines.push(`  ... and ${shas.length - 5} more`);
+  return lines.join("\n");
 }
 
 /** @param {number} n @param {string} word */

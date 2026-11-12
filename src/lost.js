@@ -14,7 +14,7 @@ import { existsSync, writeFileSync } from "node:fs";
 import { basename, dirname, resolve as resolvePath } from "node:path";
 
 import { lostObjects } from "./diagnose.js";
-import { KEEP_REFS, commitInfo, git, keepers, objectTime, readObjects, reflog, reflogNames, short, unreachableFromRefs } from "./git.js";
+import { KEEP_REFS, commitInfo, git, keepers, objectSizes, objectTime, readObjects, reflog, reflogNames, short, toplevel, unreachableFromRefs } from "./git.js";
 
 /**
  * Commits that only reflogs keep (not on any branch, tag, remote-tracking ref or the stash).
@@ -38,29 +38,39 @@ export function reflogOnly(cwd, repo) {
  * @param {{gitDir: string, commonDir: string}} repo
  */
 export function inventory(cwd, repo) {
-  const objs = lostObjects(cwd);
-  const blobs = objs.stagedBlobs.map((sha) => ({ sha, time: objectTime(repo, sha) }));
-  const contents = readObjects(cwd, blobs.map((b) => b.sha), 64 * 1024);
-  const sizes = sizeOf(cwd, blobs.map((b) => b.sha));
-  return {
-    reflogOnly: reflogOnly(cwd, repo),
-    unreachable: objs.commits,
-    staged: blobs
-      .map((b) => ({ ...b, size: sizes.get(b.sha) ?? 0, preview: preview(contents.get(b.sha)) }))
-      .sort((a, b) => (b.time ?? 0) - (a.time ?? 0)),
-  };
+  return gather(cwd, repo).inventory;
 }
 
-/** @param {string} cwd @param {string[]} shas */
-function sizeOf(cwd, shas) {
-  /** @type {Map<string, number>} */
-  const out = new Map();
-  if (!shas.length) return out;
-  for (const line of git(cwd, ["cat-file", "--batch-check"], { input: shas.join("\n") + "\n" }).split("\n")) {
-    const m = line.match(/^([0-9a-f]{40}) \w+ (\d+)$/);
-    if (m) out.set(m[1], Number(m[2]));
-  }
-  return out;
+/**
+ * The inventory, and the staged contents read for it (up to 4 MB each), so that `find` does not read them again.
+ * @param {string} cwd
+ * @param {{gitDir: string, commonDir: string}} repo
+ */
+function gather(cwd, repo) {
+  const objs = lostObjects(cwd);
+  const shas = objs.stagedBlobs;
+  const sizes = objectSizes(cwd, shas);
+  const contents = readObjects(cwd, shas, 4 * 1024 * 1024, sizes);
+  const inventory = {
+    reflogOnly: reflogOnly(cwd, repo),
+    unreachable: hideStashParts(objs.commits),
+    staged: shas
+      .map((sha) => ({ sha, time: objectTime(repo, sha), size: sizes.get(sha) ?? 0, preview: preview(contents.get(sha)) }))
+      .sort((a, b) => (b.time ?? 0) - (a.time ?? 0)),
+  };
+  return { inventory, contents };
+}
+
+/**
+ * A stash is three commits: the work ("WIP on main: ..."), the index ("index on main: ...") and, with -u, the
+ * untracked files. Only the first means something to the user; the others are left out when it is listed.
+ * @template {{sha: string, subject: string, parents: string[]}} C
+ * @param {C[]} commits
+ * @returns {C[]}
+ */
+export function hideStashParts(commits) {
+  const parts = new Set(commits.filter((c) => /^(WIP on|On) [^:]+:/.test(c.subject)).flatMap((c) => c.parents.slice(1)));
+  return commits.filter((c) => !(parts.has(c.sha) && /^(index on|untracked files on) [^:]+:/.test(c.subject)));
 }
 
 /** The first non-empty line of a content, or "(binary)". @param {Buffer | undefined} buf */
@@ -90,7 +100,7 @@ function isBinary(buf) {
  * @returns {Match[]}
  */
 export function find(cwd, repo, text, opts = {}) {
-  const inv = inventory(cwd, repo);
+  const { inventory: inv, contents: stagedContents } = gather(cwd, repo);
   const needle = opts.ignoreCase ? text.toLowerCase() : text;
   const has = (/** @type {string} */ s) => (opts.ignoreCase ? s.toLowerCase() : s).includes(needle);
   /** @type {Match[]} */
@@ -109,9 +119,8 @@ export function find(cwd, repo, text, opts = {}) {
     }
   }
   for (const c of commits) if (has(c.subject)) matches.push({ sha: c.sha, where: `commit message (${short(c.sha)})`, line: 0, text: c.subject });
-  const blobShas = [...inv.staged.map((b) => b.sha), ...paths.keys()];
-  const contents = readObjects(cwd, blobShas);
   const staged = new Set(inv.staged.map((b) => b.sha));
+  const contents = new Map([...stagedContents, ...readObjects(cwd, [...paths.keys()].filter((s) => !staged.has(s)))]);
   for (const [sha, buf] of contents) {
     if (isBinary(buf)) continue;
     const lines = buf.toString("utf8").split(/\r?\n/);
@@ -149,7 +158,7 @@ export function restore(cwd, id, file) {
     const where = existsSync(dirname(target))
       ? git(dirname(target), ["rev-parse", "--show-toplevel", "--show-prefix"], { allowFail: true }).split("\n")
       : [];
-    const top = git(cwd, ["rev-parse", "--show-toplevel"], { allowFail: true }).trim();
+    const top = toplevel(cwd);
     const rel = top && where.length >= 2 && where[0] === top ? where[1] + basename(target) : "";
     const filtered = rel
       ? spawnSync("git", ["cat-file", "--filters", `--path=${rel}`, full], { cwd, encoding: null, maxBuffer: 1 << 30, windowsHide: true })

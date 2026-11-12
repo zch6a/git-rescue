@@ -10,7 +10,7 @@
  *   git-rescue undo            undo what git-rescue last did
  */
 
-import { unlinkSync } from "node:fs";
+import { existsSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 
@@ -20,7 +20,9 @@ import { GitError, gitRun, repoAt, short, version } from "./git.js";
 import { find, inventory, restore } from "./lost.js";
 import { line, timeline } from "./timeline.js";
 
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
+/** The shape of --json output; it goes up only when a field is removed or changes meaning (see README). */
+const JSON_FORMAT = 1;
 const HELP = `git-rescue ${VERSION}: what just happened to my repository, and how do I get my work back?
 
   git-rescue                  what is wrong here, and the ways back (asks before doing anything)
@@ -31,8 +33,13 @@ const HELP = `git-rescue ${VERSION}: what just happened to my repository, and ho
   git-rescue restore ID FILE  save a lost file (or a lost commit's diff) to a new FILE
   git-rescue undo [--list]    undo what git-rescue last did (or list its backups)
 
-Options: -C PATH (the repository; default: here), --dry-run (show, change nothing), --json, --yes
-(do not ask; only with fix), fix N[a] (apply option a of problem N without the menu).
+  git-rescue fix N[a]         apply option a of problem N without the menu (with --yes: without asking)
+
+Options: -C PATH (the repository; default: here), --dry-run (show, change nothing), --json (for
+scripts; the format is described in the README), --yes (do not ask), -h, --version.
+
+Exit status: 0 nothing wrong or done, 1 something to look at (or nothing found, or you said no),
+2 could not run.
 
 It changes nothing without asking. Before any change it saves every branch, HEAD and your uncommitted
 changes under refs/rescue/, so that \`git-rescue undo\` can put them back.`;
@@ -41,6 +48,26 @@ const TTY = process.stdout.isTTY && !process.env.NO_COLOR;
 const c = (/** @type {string} */ code, /** @type {string} */ s) => (TTY ? `\x1b[${code}m${s}\x1b[0m` : s);
 const LEVEL = { problem: c("1;31", "✗"), warning: c("1;33", "!"), info: c("2", "·") };
 const RISK = { safe: c("32", "safe"), careful: c("33", "careful"), manual: c("36", "you do it") };
+
+/**
+ * Text wrapped to the terminal (at most 100 columns, for reading), each line indented by `pad`; lines that start
+ * with spaces (lists of commits or files) are kept as they are.
+ * @param {string} text @param {string} pad
+ */
+function block(text, pad) {
+  const width = Math.max(60, Math.min(process.stdout.columns || 100, 100)) - pad.length;
+  const out = [];
+  for (const para of text.split("\n")) {
+    if (/^\s/.test(para) || para.length <= width) { out.push(pad + para); continue; }
+    let lineText = "";
+    for (const word of para.split(" ")) {
+      if (lineText && lineText.length + 1 + word.length > width) { out.push(pad + lineText); lineText = word; }
+      else lineText = lineText ? `${lineText} ${word}` : word;
+    }
+    if (lineText) out.push(pad + lineText);
+  }
+  return out.join("\n");
+}
 
 /** How a step is shown. @param {string[]} step */
 function shown(step) {
@@ -61,21 +88,34 @@ export async function main(argv) {
     args.splice(i, 1);
     return true;
   };
-  const value = (/** @type {string} */ f) => {
-    const i = args.indexOf(f);
-    if (i < 0) return null;
-    const v = args[i + 1];
-    args.splice(i, 2);
-    return v ?? null;
+  /** An option's value; given twice, the last one counts. @param {string} f @returns {string | null} */
+  const value = (f) => {
+    let v = null;
+    for (let i = args.indexOf(f); i >= 0; i = args.indexOf(f)) {
+      v = args[i + 1] ?? "";
+      args.splice(i, 2);
+    }
+    return v;
   };
   if (flag("--help") || flag("-h")) return say(HELP), 0;
   if (flag("--version")) return say(`git-rescue ${VERSION}`), 0;
+  const hasC = args.includes("-C");
   const cwd = value("-C") ?? process.cwd();
+  if (hasC && (!cwd || cwd.startsWith("-"))) return err("-C needs a folder: git-rescue -C path/to/repository"), 2;
+  if (!existsSync(cwd) || !statSync(cwd).isDirectory()) return err(`there is no folder ${cwd}`), 2;
   const json = flag("--json");
   const dry = flag("--dry-run");
   const yes = flag("--yes");
   const ignoreCase = flag("-i");
-  const limit = Number(value("-n") ?? 30);
+  const n = value("-n");
+  const limit = n === null ? 30 : Number(n);
+  if (!Number.isInteger(limit) || limit < 1) return err(`-n takes a number of events, like -n 50`), 2;
+  const list = flag("--list");
+  // After --, nothing is an option: git-rescue find -- "-x" searches for "-x".
+  const dashes = args.indexOf("--");
+  const unknown = args.slice(0, dashes < 0 ? undefined : dashes).find((a) => /^-./.test(a));
+  if (unknown) return err(`unknown option ${unknown} (see git-rescue --help)`), 2;
+  if (dashes >= 0) args.splice(dashes, 1);
   const [cmd = "", ...rest] = args;
 
   try {
@@ -86,7 +126,7 @@ export async function main(argv) {
 
     if (cmd === "timeline") {
       const events = timeline(repo, limit);
-      if (json) return say(JSON.stringify(events, null, 2)), 0;
+      if (json) return say(JSON.stringify({ format: JSON_FORMAT, version: VERSION, events }, null, 2)), 0;
       if (!events.length) return say("Nothing in the reflog yet."), 0;
       say(`What happened in ${repo.top} (newest first):\n`);
       for (const e of events) say("  " + line(e));
@@ -98,7 +138,7 @@ export async function main(argv) {
       const text = rest.join(" ");
       if (!text) return err("find what? git-rescue find \"some text\""), 2;
       const matches = find(cwd, repo, text, { ignoreCase });
-      if (json) return say(JSON.stringify(matches, null, 2)), matches.length ? 0 : 1;
+      if (json) return say(JSON.stringify({ format: JSON_FORMAT, version: VERSION, text, matches }, null, 2)), matches.length ? 0 : 1;
       if (!matches.length) return say(`"${text}" is not in any lost work git still has.`), 1;
       say(`"${text}" in lost work:\n`);
       for (const m of matches) say(`  ${c("1", short(m.sha))}  ${m.where}${m.line ? `, line ${m.line}` : ""}\n      ${m.text}`);
@@ -113,7 +153,7 @@ export async function main(argv) {
       say(`Saved ${r.type === "blob" ? "the file" : "the commit and its diff"} (${r.bytes} bytes) to ${file}.`);
       return 0;
     }
-    if (cmd === "undo") return await undoCommand(cwd, repo, { list: flag("--list"), dry, yes });
+    if (cmd === "undo") return await undoCommand(cwd, repo, { list, dry, yes });
     if (cmd === "fix") return await fixCommand(cwd, repo, rest[0] ?? "", { dry, yes });
     if (cmd) return err(`unknown command "${cmd}" (see git-rescue --help)`), 2;
     return await checkCommand(cwd, repo, { json, dry });
@@ -127,21 +167,29 @@ export async function main(argv) {
 /** @param {string} cwd @param {{top: string, gitDir: string, commonDir: string}} repo @param {{json: boolean, dry: boolean}} o */
 async function checkCommand(cwd, repo, o) {
   const { state, findings } = diagnose(cwd, repo);
-  if (o.json) return say(JSON.stringify({ state, findings }, null, 2)), findings.some((f) => f.level !== "info") ? 1 : 0;
+  if (o.json) return say(JSON.stringify({ format: JSON_FORMAT, version: VERSION, state, findings }, null, 2)), findings.some((f) => f.level !== "info") ? 1 : 0;
   const where = state.bare ? "a bare repository (no working tree)" : state.unborn ? "no commits yet" : state.branch ? `on ${state.branch}` : `HEAD detached at ${short(state.headSha ?? "")}`;
   const changes = state.bare ? "" : state.changed || state.untracked ? `, ${state.changed} changed and ${state.untracked} untracked files` : ", nothing uncommitted";
-  say(`${repo.top}: ${where}${changes}\n`);
+  say(`${repo.top}: ${where}${changes}`);
+  if (state.superproject) say(c("2", `(a submodule of ${state.superproject}; that repository is checked separately)`));
+  if (state.submodules.length) {
+    const [first] = state.submodules;
+    say(c("2", state.submodules.length === 1
+      ? `(${first} is a submodule, a repository of its own: git-rescue -C ${first} checks it)`
+      : `(${state.submodules.length} submodules, each a repository of its own, such as ${state.submodules.slice(0, 3).join(", ")}: git-rescue -C ${first} checks one)`));
+  }
+  say("");
   if (!findings.length) {
     say("Nothing looks wrong. (`git-rescue timeline` shows what happened; `git-rescue lost` what git can still give back.)");
     return 0;
   }
   findings.forEach((f, i) => {
     say(`${LEVEL[f.level]} ${c("1", `${i + 1}.`)} ${f.title}`);
-    if (f.detail) say(`     ${f.detail}`);
+    if (f.detail) say(block(f.detail, "     "));
     f.options.forEach((opt, k) => {
       say(`     ${String.fromCharCode(97 + k)}) ${opt.title}  [${RISK[opt.risk]}]`);
       for (const s of opt.steps) say(`          ${shown(s)}`);
-      if (opt.note) say(`          ${c("2", opt.note)}`);
+      if (opt.note) say(c("2", block(opt.note, "          ")));
     });
     say("");
   });
@@ -238,7 +286,7 @@ function runSteps(cwd, repo, steps) {
 /** @param {string} cwd @param {{top: string, gitDir: string, commonDir: string}} repo @param {boolean} json */
 function lostCommand(cwd, repo, json) {
   const inv = inventory(cwd, repo);
-  if (json) return say(JSON.stringify(inv, null, 2)), 0;
+  if (json) return say(JSON.stringify({ format: JSON_FORMAT, version: VERSION, ...inv }, null, 2)), 0;
   const total = inv.reflogOnly.length + inv.unreachable.length + inv.staged.length;
   if (!total) return say("Nothing lost: every commit is on a branch, a tag or the stash, and nothing staged went missing."), 0;
   if (inv.reflogOnly.length) {

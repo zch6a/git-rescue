@@ -26,20 +26,33 @@ After a `reset --hard HEAD~2`, deleting a branch with `-D`, and losing a staged 
 ```text
 ~/projects/app: on main, nothing uncommitted
 
-! 1. 2 commits fell off main with a reset (moving to HEAD~2) just now
-     main was at fe34db98 before; no branch has those commits now.
-     a) Keep them on a new branch "rescued/main-before-reset-20261112-0953" (main stays as it is)  [safe]
-          git branch rescued/main-before-reset-20261112-0953 fe34db986f39f7a69b51baa25ebd023826bf043f
-     b) Put main back where it was (fe34db98)  [careful]
-          git checkout main
-          git reset --keep fe34db986f39f7a69b51baa25ebd023826bf043f
-
-! 2. Branch "experiment" was deleted with 1 commit no other branch has
+! 1. Branch "experiment" was deleted with 1 commit no other branch has
+     Its last commit seen was e65f82b2, when you left it 5 minutes ago:
+       e65f82b2  try a faster tokenizer
+     (Commits it got from another worktree or a `branch -f` are not in this list; `git-rescue lost`
+     shows them.)
      a) Bring "experiment" back  [safe]
-          git branch experiment 26bd2348d7043eff7c551ea7e4dfcf974f1b93da
+          git branch experiment e65f82b21596f06afa270587322b7f9d0be37c82
 
-! 3. 1 file version that you added (staged) but never committed
-     a) Look at them and save the ones you want  [you do it]
+! 2. 2 commits fell off main with a reset (moving to HEAD~2) just now
+     main was at 39f66d49 before; no branch has these commits now:
+       39f66d49  parser handles escapes
+       3b48736b  parser handles quotes
+     a) Keep them on a new branch "rescued/main-before-reset-39f66d49" (main stays as it is)  [safe]
+          git branch rescued/main-before-reset-39f66d49 39f66d49115fc9fa67247b8e5d6a2c0d96e4b888
+     b) Put main back where it was (39f66d49)  [careful]
+          git checkout main
+          git reset --keep 39f66d49115fc9fa67247b8e5d6a2c0d96e4b888
+          --keep refuses to run if it would overwrite changes you have not committed; git-rescue
+          backs them up first anyway.
+
+· 3. 1 file version that you added (staged) but never committed
+     What `git add` saved before a `reset --hard`, `checkout .` or `stash`, or an earlier version of
+     a file you added again. git keeps the contents, not the names:
+       169672f8  just now        TODO: call the bank about the invoice
+     a) Save one to a new file  [you do it]
+          (git-rescue restore <id> <new-file-name>)
+          `git-rescue find "some text"` searches them all.
 
 Fix one? Type its number and letter (like 1a), or press Enter to leave everything as it is:
 ```
@@ -78,6 +91,10 @@ commits it concerns.
 - **An upstream someone force-pushed**: your branch still has the old history, and pulling would merge it
   back in; the option replays only your own commits onto the new one.
 
+Each finding names what is at stake: the commits (id and subject), the files a stash changed, the first line
+of a lost file. In a submodule, a HEAD detached at the commit the parent repository records is how git leaves
+it, not a problem; a parent repository names its submodules, which are checked on their own (`-C lib`).
+
 ## Use
 
 ```bash
@@ -93,6 +110,36 @@ git-rescue --dry-run        # show, change nothing;  --json for scripts;  -C pat
 
 Install the command with `npm install -g github:zch6a/git-rescue`, or run it once with `npx` as above.
 It needs Node 18+ and git (tested with git 2.19, from 2018, and the current one).
+
+## For scripts: `--json`
+
+Every command takes `--json` and prints one object. `format` is 1: it goes up only if a field is removed or
+changes meaning; new fields can appear in a 1. Exit status: 0 nothing wrong (or done), 1 something to look at
+(or nothing found), 2 could not run.
+
+```jsonc
+// git-rescue --json
+{
+  "format": 1, "version": "0.2.0",
+  "state": { "branch": "main", "headSha": "…", "unborn": false, "bare": false, "operation": null,
+             "conflicted": [], "changed": 0, "untracked": 0, "lockAge": null,
+             "superproject": null, "submodules": [] },
+  "findings": [{
+    "id": "dropped-by-reset",            // what kind of finding; the ids are listed in src/diagnose.js
+    "level": "warning",                   // "problem", "warning" or "info"
+    "title": "2 commits fell off main with a reset (moving to HEAD~2) just now",
+    "detail": "…",
+    "commits": ["39f66d49…", "3b48736b…"],
+    "options": [{ "title": "Keep them on a new branch …", "risk": "safe",   // "safe", "careful", "manual"
+                  "steps": [["branch", "rescued/main-before-reset-39f66d49", "39f66d49…"]] }]
+  }]
+}
+```
+
+A step is git's arguments; a step of one string with spaces in it is something the user does, and
+`[":remove-index-lock"]` is done by git-rescue. `timeline --json` prints `{format, version, events}`,
+`lost --json` `{format, version, reflogOnly, unreachable, staged}`, `find --json` `{format, version, text,
+matches}`.
 
 ## Safe to run
 
@@ -120,10 +167,12 @@ It needs Node 18+ and git (tested with git 2.19, from 2018, and the current one)
 
 ## Status
 
-0.1, in development. Tested with throwaway repositories made in the system's temp folder (never a real
+0.2, in development ([changes](CHANGELOG.md), [contributing](CONTRIBUTING.md)). Tested with throwaway repositories made in the system's temp folder (never a real
 one): every finding above is staged for real (a reset, a deleted branch, a dropped stash, a conflicted
 merge and rebase, a stale lock, a force-pushed remote), then the fix is applied through the command and
-undone again; and the cases an independent review found (routine rebases and `stash pop`s that are not
+undone again; submodules, a path with spaces and
+Chinese characters, and a repository with 30,000 commits and 3,000 lost file versions (the report takes about
+3 s on Windows); and the cases an independent review found (routine rebases and `stash pop`s that are not
 losses, 900 reflog entries, worktrees, a bare repository, non-ASCII file names, line endings). On git 2.19
 here, and on the git of GitHub's Windows, macOS and Linux runners in CI.
 

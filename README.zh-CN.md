@@ -24,20 +24,35 @@ npx github:zch6a/git-rescue
 ```text
 ~/projects/app: on main, nothing uncommitted
 
-! 1. 2 commits fell off main with a reset (moving to HEAD~2) just now
-     main was at fe34db98 before; no branch has those commits now.
-     a) Keep them on a new branch "rescued/main-before-reset-20261112-0953" (main stays as it is)  [safe]
-          git branch rescued/main-before-reset-20261112-0953 fe34db986f39f7a69b51baa25ebd023826bf043f
-     b) Put main back where it was (fe34db98)  [careful]
-          git checkout main
-          git reset --keep fe34db986f39f7a69b51baa25ebd023826bf043f
-
-! 2. Branch "experiment" was deleted with 1 commit no other branch has
+! 1. Branch "experiment" was deleted with 1 commit no other branch has
+     Its last commit seen was e65f82b2, when you left it 5 minutes ago:
+       e65f82b2  try a faster tokenizer
+     (Commits it got from another worktree or a `branch -f` are not in this list; `git-rescue lost`
+     shows them.)
      a) Bring "experiment" back  [safe]
-          git branch experiment 26bd2348d7043eff7c551ea7e4dfcf974f1b93da
+          git branch experiment e65f82b21596f06afa270587322b7f9d0be37c82
 
-! 3. 1 file version that you added (staged) but never committed
-     a) Look at them and save the ones you want  [you do it]
+! 2. 2 commits fell off main with a reset (moving to HEAD~2) just now
+     main was at 39f66d49 before; no branch has these commits now:
+       39f66d49  parser handles escapes
+       3b48736b  parser handles quotes
+     a) Keep them on a new branch "rescued/main-before-reset-39f66d49" (main stays as it is)  [safe]
+          git branch rescued/main-before-reset-39f66d49 39f66d49115fc9fa67247b8e5d6a2c0d96e4b888
+     b) Put main back where it was (39f66d49)  [careful]
+          git checkout main
+          git reset --keep 39f66d49115fc9fa67247b8e5d6a2c0d96e4b888
+          --keep refuses to run if it would overwrite changes you have not committed; git-rescue
+          backs them up first anyway.
+
+· 3. 1 file version that you added (staged) but never committed
+     What `git add` saved before a `reset --hard`, `checkout .` or `stash`, or an earlier version of
+     a file you added again. git keeps the contents, not the names:
+       169672f8  just now        TODO: call the bank about the invoice
+     a) Save one to a new file  [you do it]
+          (git-rescue restore <id> <new-file-name>)
+          `git-rescue find "some text"` searches them all.
+
+Fix one? Type its number and letter (like 1a), or press Enter to leave everything as it is:
 ```
 
 ```text
@@ -62,6 +77,8 @@ Saved the file (38 bytes) to notes.md.
 - **已暂存但从未提交的文件**，被 `reset --hard` 或 `checkout .` 弄丢的：reflog 看不到它们，但在 `git gc` 清理之前（大约两周），git 还留着它们的内容。只作提示，因为 add 一个文件、再改、再 add，也会留下前一个版本。
 - **别人 force push 过的上游分支**：你的分支还带着旧历史，这时 pull 会把旧历史又合并回来；对应的修复只把你自己的提交接到新历史上。
 
+每一条都会列出涉及的东西：提交（id 和标题）、stash 改过的文件、丢失文件的第一行。在子模块里，HEAD 停在父仓库记录的那个提交上（detached）是 git 的正常做法，不算问题；在父仓库里会列出它的子模块，子模块要单独检查（`-C lib`）。
+
 ## 用法
 
 ```bash
@@ -76,6 +93,31 @@ git-rescue --dry-run        # 只显示，不修改；--json 用于脚本；-C �
 ```
 
 安装成命令：`npm install -g github:zch6a/git-rescue`，或者像上面那样用 `npx` 直接运行一次。需要 Node 18+ 和 git（用 2018 年的 git 2.19 和最新版测试过）。
+
+## 给脚本用：`--json`
+
+每个命令都支持 `--json`，输出一个对象。`format` 目前是 1：只有删掉字段或改变字段含义时才会加 1；新增字段不改版本号。退出码：0 没有问题（或已完成），1 有需要看的（或没找到），2 无法运行。
+
+```jsonc
+// git-rescue --json
+{
+  "format": 1, "version": "0.2.0",
+  "state": { "branch": "main", "headSha": "…", "unborn": false, "bare": false, "operation": null,
+             "conflicted": [], "changed": 0, "untracked": 0, "lockAge": null,
+             "superproject": null, "submodules": [] },
+  "findings": [{
+    "id": "dropped-by-reset",            // 问题的类型，全部 id 见 src/diagnose.js
+    "level": "warning",                   // "problem"、"warning" 或 "info"
+    "title": "2 commits fell off main with a reset (moving to HEAD~2) just now",
+    "detail": "…",
+    "commits": ["39f66d49…", "3b48736b…"],
+    "options": [{ "title": "Keep them on a new branch …", "risk": "safe",   // "safe"、"careful"、"manual"
+                  "steps": [["branch", "rescued/main-before-reset-39f66d49", "39f66d49…"]] }]
+  }]
+}
+```
+
+每一步是 git 的参数；只有一个、带空格的字符串的那一步需要你自己做，`[":remove-index-lock"]` 由 git-rescue 自己完成。`timeline --json` 输出 `{format, version, events}`，`lost --json` 输出 `{format, version, reflogOnly, unreachable, staged}`，`find --json` 输出 `{format, version, text, matches}`。
 
 ## 放心运行
 
@@ -93,7 +135,7 @@ git-rescue --dry-run        # 只显示，不修改；--json 用于脚本；-C �
 
 ## 状态
 
-0.1，开发中。测试只用在系统临时文件夹里新建的仓库（绝不碰真实仓库）：上面每种情况都会真的制造出来（reset、删分支、丢 stash、有冲突的 merge 和 rebase、残留的锁、被 force push 的远程），然后通过命令执行修复，再撤销；还有独立审查发现的情况（不算丢失的普通 rebase 和 `stash pop`、900 条 reflog、worktree、裸仓库、非 ASCII 文件名、换行符）。在这里的 git 2.19 上测试，CI 里在 GitHub 的 Windows、macOS、Linux 上测试。
+0.2，开发中（[更新记录](CHANGELOG.md)、[参与贡献](CONTRIBUTING.md)）。测试只用在系统临时文件夹里新建的仓库（绝不碰真实仓库）：上面每种情况都会真的制造出来（reset、删分支、丢 stash、有冲突的 merge 和 rebase、残留的锁、被 force push 的远程），然后通过命令执行修复，再撤销；还有子模块、路径带空格和中文、有 3 万个提交和 3000 个丢失文件版本的仓库（在 Windows 上报告大约 3 秒）；以及独立审查发现的情况（不算丢失的普通 rebase 和 `stash pop`、900 条 reflog、worktree、裸仓库、非 ASCII 文件名、换行符）。在这里的 git 2.19 上测试，CI 里在 GitHub 的 Windows、macOS、Linux 上测试。
 
 ## 开发
 

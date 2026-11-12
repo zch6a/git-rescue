@@ -44,3 +44,36 @@ Found while fixing: the first version of "other worktrees keep commits" counted 
 **Open**
 - Submodules (a submodule's own repository is a separate case); a repository in the middle of `git gc`.
 - A second review in a later round.
+
+## Round 2 — 2026-11-12 (0.2.0)
+
+**How it was checked.** Every command was run, as someone in trouble would, on repositories staged in the temp folder: a path with spaces and Chinese characters (a reset, a deleted branch, a dropped stash, a lost staged file), a parent repository with a submodule that lost commits, a submodule detached at its recorded commit, and a repository with 30,000 commits and 3,000 unreachable loose blobs. Each git call was timed by wrapping `spawnSync`.
+
+**What the report said, and now says**
+- "2 commits fell off main" without saying which: the user had to run `lost` and guess. Now each finding lists the commits (id and subject, the newest five), a dropped stash the files it changed, the lost-staged finding the first line of the newest five; its only "step" used to be "run git-rescue lost", now `git-rescue restore <id> <new-file-name>`.
+- Detail lines ran to 200 columns; now wrapped to the terminal (at most 100), lists kept as they are.
+- `lost` listed a stash's inner "index on main" commit as a separate lost commit; now only the stash.
+- `timeline` showed "reset to HEAD" twice after a `git stash` with no explanation; now "dropped or unstaged uncommitted changes (reset to HEAD: `reset --hard`, `git stash`)". Messages from git 2.19 and newer git that were shown raw now have words: `rebase finished:`, `rebase: <subject>`, `pull origin main:`, `pull --rebase (...)`, `am:`, `clone:`, `Branch: renamed`, `commit (cherry-pick)`, a merge commit's "Merge made by the 'recursive' strategy."
+- A stash popped and then edited further is, by git's records, the same as one dropped (both delete the reflog entry); the finding now says so instead of only "dropped".
+
+**Bugs**
+- **Run from a subfolder, a popped stash was reported as dropped**: the working-tree check hashed paths relative to the top folder from the current one. Reproduced on the 0.1 code with a test; now hashed from the top folder.
+- **Credentials**: `git clone https://user:token@host/...` and `git pull <url>` write the URL into the reflog, and `timeline` (and its JSON `raw` field) printed it. Now the user part of any URL is shown as `***`.
+- **Command line**: a mistyped or missing path after `-C` gave "could not run git rev-parse: spawnSync git ENOENT" (PowerShell drops an empty argument, so the next word became the path); an unknown option such as `--jsn` was taken for a command; `-n abc` became NaN. Each now says what is wrong. `--` ends the options (`find -- -x`); `-C` given twice: the last counts.
+
+Found while testing, in my own scenario script: it used `init.defaultBranch`, which git 2.19 ignores, so the scenario failed, the folder came back empty, and git-rescue's read-only report ran on this project's own repository. Nothing was changed (no fix runs without `--yes`), but it broke the rule that git-rescue is only ever run on throwaway repositories; every later run went through a wrapper that refuses any folder outside the temp folder.
+
+**Submodules**: in a submodule, a HEAD detached at the commit the parent records was "HEAD is detached" with an offer to go back to main, which would make the parent see a changed submodule. Now it is information without options ("that is how git leaves a submodule"). The parent names its submodules (from `.gitmodules`) and that each is checked on its own; a submodule names its parent.
+
+**Performance** (30,000 commits, 3,000 lost loose blobs, Windows): report 4.9 → 3.0 s, `lost` 4.6 → 3.6 s, `find` 6.5 → 3.5 s. Starting a git program costs 30 to 90 ms here; `for-each-ref` ran four times per report and `rev-parse --show-toplevel` three, so answers that cannot change while git-rescue only reads are kept for the command (and dropped before and after anything is changed). Whether a stash was applied took up to four git calls per file (`rev-parse` for the stash's, HEAD's and the index's version, `hash-object`): now three per stash (`cat-file --batch-check` takes `rev:path` names, `hash-object` takes many files). `lost` and `find` read every lost blob twice. The rest is git reading loose objects: 1.1 s for 3,000 in `cat-file --batch`, and 2.9 s for Node to open and inflate them itself, so that was not the way; the report now reads only the newest 300 (stat-ing 3,000 loose objects to sort them costs 68 ms) and counts the rest.
+
+**--json**: every command prints one object with `format` (1) and `version`; the shape is in the README with the rule for changing it, and a test pins the field names.
+
+**Docs and project**: README example regenerated from a real run; CHANGELOG.md and CONTRIBUTING.md (never on a real repository, old git, findings are facts); `npm pack` contents checked (11 files, 34 kB; CHANGELOG added). `npm audit` could not reach its endpoint; there are no runtime dependencies.
+
+**Tests**: 44 (+8, `test/round2.test.js`).
+
+**Open**
+- A repository in the middle of `git gc` (objects being packed while fsck reads).
+- Many submodules: the parent only names them; checking them all from the parent.
+- A second independent review (round 4 or 5).

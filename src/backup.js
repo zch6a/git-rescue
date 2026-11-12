@@ -14,7 +14,7 @@ import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync } fro
 import { dirname, join } from "node:path";
 
 import { statusEntries } from "./diagnose.js";
-import { git, refs, resolve, worktrees } from "./git.js";
+import { forget, git, refs, resolve, samePath, worktrees } from "./git.js";
 
 /**
  * @typedef {{head: string, branches: Record<string, string>}} RefState
@@ -24,6 +24,7 @@ import { git, refs, resolve, worktrees } from "./git.js";
 
 /** Where HEAD and every branch are now. @param {string} cwd @returns {RefState} */
 export function refState(cwd) {
+  forget(); // where things are now, not where they were when git-rescue started
   const symbolic = git(cwd, ["symbolic-ref", "--quiet", "HEAD"], { allowFail: true }).trim();
   /** @type {Record<string, string>} */
   const branches = {};
@@ -105,7 +106,7 @@ export function undoSteps(cwd, b) {
   /** @type {string[]} */
   const skipped = [];
   if (!after) return { steps: [], skipped: ["git-rescue did not get to note where things were after this fix, so it cannot tell what the fix changed"], restoreWorktree: null, files: b.files };
-  const elsewhere = new Set(worktrees(cwd).filter((w) => w.branch && w.path.replace(/\\/g, "/").toLowerCase() !== b.top.replace(/\\/g, "/").toLowerCase()).map((w) => w.branch));
+  const elsewhere = new Set(worktrees(cwd).filter((w) => w.branch && !samePath(w.path, b.top)).map((w) => w.branch));
   const steps = [];
   // HEAD first: the branch ops below then act on the branch that will be checked out.
   let current = now.head.startsWith("refs/heads/") ? now.head.slice(11) : null;

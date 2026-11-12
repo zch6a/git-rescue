@@ -19,37 +19,62 @@ import { reflog, reflogNames, short } from "./git.js";
 export function timeline(repo, limit = 30) {
   /** @type {Event[]} */
   const events = [];
-  for (const e of reflog(repo, "HEAD")) events.push({ time: e.time, what: describe(e.message), before: e.old, after: e.new, ref: "HEAD", raw: e.message });
-  for (const e of reflog(repo, "refs/stash")) events.push({ time: e.time, what: `stashed: ${e.message.replace(/^(WIP on|On) /, "")}`, before: e.old, after: e.new, ref: "stash", raw: e.message });
+  for (const e of reflog(repo, "HEAD")) events.push({ time: e.time, what: describe(e.message, e.old === e.new), before: e.old, after: e.new, ref: "HEAD", raw: hideCredentials(e.message) });
+  for (const e of reflog(repo, "refs/stash")) events.push({ time: e.time, what: `stashed: ${hideCredentials(e.message).replace(/^(WIP on|On) /, "")}`, before: e.old, after: e.new, ref: "stash", raw: hideCredentials(e.message) });
   for (const name of reflogNames(repo).filter((n) => n.startsWith("refs/remotes/"))) {
     for (const e of reflog(repo, name)) {
       if (/forced-update/.test(e.message)) {
-        events.push({ time: e.time, what: `${name.slice("refs/remotes/".length)} was force-pushed by someone (you fetched the rewritten history)`, before: e.old, after: e.new, ref: name, raw: e.message });
+        events.push({ time: e.time, what: `${name.slice("refs/remotes/".length)} was force-pushed by someone (you fetched the rewritten history)`, before: e.old, after: e.new, ref: name, raw: hideCredentials(e.message) });
       }
     }
   }
   return events.sort((a, b) => b.time - a.time).slice(0, limit);
 }
 
-/** A reflog message in plain words. @param {string} m */
-export function describe(m) {
+/**
+ * URLs in reflog messages (`clone: from https://user:token@host/...`, `pull https://...`) can carry a password
+ * or token: never shown or written out.
+ * @param {string} m
+ */
+export function hideCredentials(m) {
+  return m.replace(/([a-z][\w+.-]*:\/\/)[^\/\s@]+@/gi, "$1***@");
+}
+
+/**
+ * A reflog message in plain words. The messages are git's own and have changed over the years (git 2.19 writes
+ * "rebase finished: returning to", newer git "rebase (finish): returning to"); both are known, and anything else
+ * is shown as git wrote it.
+ * @param {string} message
+ * @param {boolean} [same] HEAD stayed on the same commit
+ */
+export function describe(message, same = false) {
+  const m = hideCredentials(message);
   let r;
   if ((r = m.match(/^commit \(initial\): (.*)/))) return `first commit: "${r[1]}"`;
   if ((r = m.match(/^commit \(amend\): (.*)/))) return `amended the last commit: "${r[1]}"`;
   if ((r = m.match(/^commit \(merge\): (.*)/))) return `committed a merge: "${r[1]}"`;
+  if ((r = m.match(/^commit \(cherry-pick\): (.*)/))) return `committed a cherry-pick: "${r[1]}"`;
   if ((r = m.match(/^commit: (.*)/))) return `committed "${r[1]}"`;
-  if ((r = m.match(/^checkout: moving from (\S+) to (\S+)/))) return `switched from ${name(r[1])} to ${name(r[2])}`;
-  if ((r = m.match(/^reset: moving to (.*)/))) return `reset to ${name(r[1])}`;
-  if ((r = m.match(/^rebase(?: -i)? \((start|finish|abort|pick|squash|fixup|reword|edit|continue)\): ?(.*)/))) {
+  if ((r = m.match(/^checkout: moving from (\S+) to (\S+)/))) return r[1] === r[2] ? `checked out ${name(r[2])} again` : `switched from ${name(r[1])} to ${name(r[2])}`;
+  if ((r = m.match(/^reset: moving to (.*)/))) {
+    // A reset that left HEAD where it was only unstaged or threw away changes: `reset --hard`, `git stash`.
+    return same ? `dropped or unstaged uncommitted changes (reset to ${name(r[1])}: \`reset --hard\`, \`git stash\`)` : `reset to ${name(r[1])}`;
+  }
+  if ((r = m.match(/^(pull --rebase|rebase(?: -i| -m)?) \((\w+)\): ?(.*)/))) {
     /** @type {Record<string, string>} */
     const steps = { start: "started a rebase", finish: "finished a rebase", abort: "abandoned a rebase", pick: "rebase: replayed", squash: "rebase: squashed", fixup: "rebase: fixed up", reword: "rebase: reworded", edit: "rebase: stopped to edit", continue: "rebase: continued" };
-    const step = steps[r[1]] ?? `rebase (${r[1]})`;
-    return r[2] ? `${step} ${r[2].replace(/^returning to refs\/heads\//, "back on ")}` : step;
+    const step = (r[1] === "pull --rebase" && r[2] === "start" ? "pulled with --rebase: started a rebase" : steps[r[2]]) ?? `rebase (${r[2]})`;
+    return r[3] ? `${step} ${r[3].replace(/^returning to refs\/heads\//, "back on ").replace(/^checkout ([0-9a-f]{40})$/, (_, s) => `onto ${short(s)}`)}` : step;
   }
-  if ((r = m.match(/^merge (\S+): (.*)/))) return `merged ${r[1]} (${r[2]})`;
-  if ((r = m.match(/^pull(?: --rebase)?: (.*)/))) return `pulled (${r[1]})`;
+  if ((r = m.match(/^rebase finished: returning to refs\/heads\/(.*)/))) return `finished a rebase back on ${r[1]}`;
+  if ((r = m.match(/^rebase: (.*)/))) return `rebase: ${r[1] === "updating HEAD" ? "moved HEAD" : `replayed "${r[1]}"`}`;
+  if ((r = m.match(/^merge (\S+): (.*)/))) return `merged ${r[1]} (${r[2].replace(/^Merge made by the '(\w+)' strategy\.$/, "a merge commit")})`;
+  if ((r = m.match(/^pull\b.*?: (.*)/))) return `pulled (${r[1].replace(/^Merge made by the '(\w+)' strategy\.$/, "a merge commit")})`;
   if ((r = m.match(/^cherry-pick: (.*)/))) return `cherry-picked "${r[1]}"`;
   if ((r = m.match(/^revert: (.*)/))) return `reverted: "${r[1]}"`;
+  if ((r = m.match(/^am: (.*)/))) return `applied a patch (git am): "${r[1]}"`;
+  if ((r = m.match(/^clone: from (.*)/))) return `cloned from ${r[1]}`;
+  if ((r = m.match(/^Branch: renamed refs\/heads\/(\S+) to refs\/heads\/(\S+)/))) return `renamed branch ${r[1]} to ${r[2]}`;
   if ((r = m.match(/^branch: (.*)/))) return `branch: ${r[1]}`;
   return m;
 }

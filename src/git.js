@@ -56,12 +56,46 @@ export function git(cwd, args, opts = {}) {
   return /** @type {string} */ (r.stdout ?? "");
 }
 
-/** The same, returning the exit code and both outputs. @param {string} cwd @param {string[]} args */
+/**
+ * Answers that do not change while git-rescue only reads (the refs, the top folder, the worktrees), kept for the
+ * rest of the command: every git program costs 30 to 90 ms to start on Windows. `forget()` drops them; it runs
+ * before anything is changed (gitRun, a backup) and after.
+ * @type {Map<string, unknown>}
+ */
+const memo = new Map();
+
+/** @template T @param {string} key @param {() => T} fn @returns {T} */
+export function remember(key, fn) {
+  if (!memo.has(key)) memo.set(key, fn());
+  return /** @type {T} */ (memo.get(key));
+}
+
+export function forget() {
+  memo.clear();
+}
+
+/** The same, returning the exit code and both outputs; used for the steps of a fix. @param {string} cwd @param {string[]} args */
 export function gitRun(cwd, args) {
+  forget();
   const r = spawnSync("git", args, { cwd, env: env(), encoding: "utf8", windowsHide: true, maxBuffer: 64 * 1024 * 1024 });
+  forget();
   if (r.error) throw new GitError(`could not run git: ${r.error.message}`, args, null);
   return { code: r.status ?? 1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 }
+
+/** Whether a read-only git command succeeds (`merge-base --is-ancestor`, `cat-file -e`). @param {string} cwd @param {string[]} args */
+export function gitOk(cwd, args) {
+  const r = spawnSync("git", args, { cwd, env: env(), stdio: "ignore", windowsHide: true });
+  return r.status === 0;
+}
+
+/** The working tree's top folder as git spells it ("" in a bare repository). @param {string} cwd */
+export function toplevel(cwd) {
+  return remember(`top ${cwd}`, () => git(cwd, ["rev-parse", "--show-toplevel"], { allowFail: true }).trim());
+}
+
+/** The same folder, however it is spelled (slashes, letter case). @param {string} a @param {string} b */
+export const samePath = (a, b) => a.replace(/\\/g, "/").toLowerCase() === b.replace(/\\/g, "/").toLowerCase();
 
 /**
  * The repository around `cwd`: its top folder and its .git folder (for a worktree, the worktree's own git
@@ -73,7 +107,7 @@ export function repoAt(cwd) {
   const out = git(cwd, ["rev-parse", "--absolute-git-dir", "--git-common-dir"], { allowFail: true }).trim().split("\n");
   if (out.length < 2 || !out[0]) return null;
   const [gitDir, common] = out;
-  const top = bare ? gitDir : git(cwd, ["rev-parse", "--show-toplevel"], { allowFail: true }).trim();
+  const top = bare ? gitDir : toplevel(cwd);
   const commonDir = common.match(/^([A-Za-z]:)?[\\/]/) ? common : join(cwd, common);
   return { top, gitDir, commonDir: existsSync(commonDir) ? commonDir : gitDir, bare };
 }
@@ -86,7 +120,7 @@ export function resolve(cwd, rev) {
 
 /** @param {string} cwd @param {string} sha */
 export function exists(cwd, sha) {
-  return gitRun(cwd, ["cat-file", "-e", sha]).code === 0;
+  return gitOk(cwd, ["cat-file", "-e", sha]);
 }
 
 /**
@@ -109,13 +143,16 @@ export function present(cwd, shas) {
  * @returns {Map<string, string>}
  */
 export function refs(cwd) {
-  const out = git(cwd, ["for-each-ref", "--format=%(objectname) %(refname)"]);
-  const m = new Map();
-  for (const line of out.split("\n")) {
-    const [sha, name] = line.split(" ");
-    if (sha && name && !name.startsWith("refs/rescue/")) m.set(name, sha);
-  }
-  return m;
+  return remember(`refs ${cwd}`, () => {
+    const out = git(cwd, ["for-each-ref", "--format=%(objectname) %(refname)"]);
+    /** @type {Map<string, string>} */
+    const m = new Map();
+    for (const line of out.split("\n")) {
+      const [sha, name] = line.split(" ");
+      if (sha && name && !name.startsWith("refs/rescue/")) m.set(name, sha);
+    }
+    return m;
+  });
 }
 
 /** @param {string} cwd @returns {string[]} */
@@ -150,13 +187,15 @@ export const KEEP_REFS = ["--exclude=refs/rescue/*", "--glob=refs/*"];
  * @returns {string[]}
  */
 export function keepers(cwd) {
-  const out = [];
-  const stashes = git(cwd, ["log", "-g", "--format=%H", "refs/stash", "--"], { allowFail: true });
-  out.push(...stashes.split("\n").filter((l) => /^[0-9a-f]{40}$/.test(l)));
-  // Other worktrees' HEADs, not this one's: commits on this detached HEAD are exactly what may be about to be lost.
-  const here = git(cwd, ["rev-parse", "--show-toplevel"], { allowFail: true }).trim().replace(/\\/g, "/").toLowerCase();
-  for (const w of worktrees(cwd)) if (w.head && w.path.replace(/\\/g, "/").toLowerCase() !== here) out.push(w.head);
-  return [...new Set(out)];
+  return remember(`keepers ${cwd}`, () => {
+    const out = [];
+    const stashes = refs(cwd).has("refs/stash") ? git(cwd, ["log", "-g", "--format=%H", "refs/stash", "--"], { allowFail: true }) : "";
+    out.push(...stashes.split("\n").filter((l) => /^[0-9a-f]{40}$/.test(l)));
+    // Other worktrees' HEADs, not this one's: commits on this detached HEAD are exactly what may be about to be lost.
+    const here = toplevel(cwd);
+    for (const w of worktrees(cwd)) if (w.head && !samePath(w.path, here)) out.push(w.head);
+    return [...new Set(out)];
+  });
 }
 
 /**
@@ -165,7 +204,11 @@ export function keepers(cwd) {
  * @returns {{path: string, head: string | null, branch: string | null}[]}
  */
 export function worktrees(cwd) {
-  const out = git(cwd, ["worktree", "list", "--porcelain"], { allowFail: true });
+  return remember(`worktrees ${cwd}`, () => parseWorktrees(git(cwd, ["worktree", "list", "--porcelain"], { allowFail: true })));
+}
+
+/** @param {string} out */
+function parseWorktrees(out) {
   /** @type {{path: string, head: string | null, branch: string | null}[]} */
   const list = [];
   for (const block of out.split(/\n\n+/)) {
@@ -263,22 +306,36 @@ export function objectTime(repo, sha) {
 }
 
 /**
+ * Object sizes in one `cat-file --batch-check`: sha -> bytes (unknown objects are left out).
+ * @param {string} cwd
+ * @param {string[]} shas
+ * @returns {Map<string, number>}
+ */
+export function objectSizes(cwd, shas) {
+  /** @type {Map<string, number>} */
+  const out = new Map();
+  if (!shas.length) return out;
+  for (const line of git(cwd, ["cat-file", "--batch-check"], { input: shas.join("\n") + "\n" }).split("\n")) {
+    const m = line.match(/^([0-9a-f]{40}) \w+ (\d+)$/);
+    if (m) out.set(m[1], Number(m[2]));
+  }
+  return out;
+}
+
+/**
  * Object contents in one `cat-file --batch` run: sha -> Buffer (objects over `limit` bytes are skipped).
+ * Reading a loose object costs a file open (most of the time on Windows), so callers that already know the sizes
+ * pass them.
  * @param {string} cwd
  * @param {string[]} shas
  * @param {number} [limit]
+ * @param {Map<string, number>} [sizes]
  * @returns {Map<string, Buffer>}
  */
-export function readObjects(cwd, shas, limit = 4 * 1024 * 1024) {
+export function readObjects(cwd, shas, limit = 4 * 1024 * 1024, sizes = objectSizes(cwd, shas)) {
   /** @type {Map<string, Buffer>} */
   const out = new Map();
-  if (!shas.length) return out;
-  const sizes = git(cwd, ["cat-file", "--batch-check"], { input: shas.join("\n") + "\n" });
-  const wanted = [];
-  for (const line of sizes.split("\n")) {
-    const m = line.match(/^([0-9a-f]{40}) \w+ (\d+)$/);
-    if (m && Number(m[2]) <= limit) wanted.push(m[1]);
-  }
+  const wanted = shas.filter((s) => (sizes.get(s) ?? Infinity) <= limit);
   if (!wanted.length) return out;
   const buf = /** @type {Buffer} */ (/** @type {unknown} */ (git(cwd, ["cat-file", "--batch"], { input: wanted.join("\n") + "\n", raw: true })));
   let pos = 0;
