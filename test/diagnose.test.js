@@ -217,10 +217,13 @@ test("an upstream rewritten by someone's force push", async () => {
   assert.deepEqual(f.options[0].steps[0].slice(0, 2), ["rebase", "--onto"]);
 });
 
-test("an amend is only information", async () => {
+test("an amend of the message is nothing; an amend that changed the content is information", async () => {
   const dir = repo();
   commit(dir, "a.txt", "a\n", "typo");
   git(dir, "commit", "-q", "--amend", "-m", "fixed message");
+  assert.deepEqual(ids(await findings(dir)), [], "the same patch: nothing lost");
+  writeFileSync(join(dir, "a.txt"), "a, changed in the amend\n");
+  git(dir, "commit", "-q", "-a", "--amend", "-m", "fixed message");
   const f = await findings(dir);
   assert.deepEqual(ids(f), ["dropped-by-amend"]);
   assert.equal(f[0].level, "info");

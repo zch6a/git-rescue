@@ -53,13 +53,13 @@ Saved the file (38 bytes) to notes.md.
 
 它读取的是仓库的实际状态，而不是根据时间去猜：每一条都是确实存在的情况，并列出涉及的提交。
 
-- **做到一半的操作**：等着解决冲突的 rebase、`am`、merge、cherry-pick、revert（列出是哪些文件），没有结束的 bisect。可以放弃（完全回到开始之前），或者完成它。
+- **做到一半的操作**：等着解决冲突的 rebase、`am`、merge、cherry-pick、revert（列出是哪些文件），没有结束的 bisect。可以放弃（回到开始之前；放弃会重置文件，所以你已经做的修改会先复制到 `.git/rescue-files/`），或者完成它。
 - **残留的 `.git/index.lock`**：它会让 git 拒绝做任何修改。
-- **不在任何分支上的提交**：detached HEAD 上的提交，或者从 detached HEAD 切走时被丢下的提交。
-- **从分支上掉下来的提交**：`reset`、rebase、强制 pull 造成的；amend（只作提示）。
+- **不在任何分支上的提交**：detached HEAD 上的提交，或者从 detached HEAD 切走、或在上面 reset 时被丢下的提交。
+- **从分支上掉下来的提交**，不管是什么造成的：`reset`、`branch -f` 或 `checkout -B`、强制 pull、丢掉了提交的 rebase、改了内容的 amend（只作提示）。保留了改动的 rebase 或 amend 不算丢失：提交按改动内容比较，而不是按 id。
 - **被删掉的分支**，而且它的提交别的分支都没有（已合并的分支不会报）。
-- **被丢掉的 stash**（`stash drop`、`stash clear`）：放回 stash 列表。
-- **已暂存但从未提交的文件**，被 `reset --hard` 或 `checkout .` 弄丢的：reflog 看不到它们，但在 `git gc` 清理之前（大约两周），git 还留着它们的内容。
+- **被丢掉、而且改动不在你的文件或提交里的 stash**（`stash drop`、`stash clear`）：放回 stash 列表。（`stash pop` 应用之后也会丢掉 stash，这种不会报。）
+- **已暂存但从未提交的文件**，被 `reset --hard` 或 `checkout .` 弄丢的：reflog 看不到它们，但在 `git gc` 清理之前（大约两周），git 还留着它们的内容。只作提示，因为 add 一个文件、再改、再 add，也会留下前一个版本。
 - **别人 force push 过的上游分支**：你的分支还带着旧历史，这时 pull 会把旧历史又合并回来；对应的修复只把你自己的提交接到新历史上。
 
 ## 用法
@@ -80,7 +80,7 @@ git-rescue --dry-run        # 只显示，不修改；--json 用于脚本；-C �
 ## 放心运行
 
 - **不问就不改任何东西。** 报告以及 `timeline`、`lost`、`find` 都只读。修复会先列出确切的 git 命令，你同意后才执行（或者加 `--yes`）。
-- **每次修复之前都会备份** 所有分支、HEAD 和你没提交的修改（像 `git stash` 那样，但不动你的文件），存在 `refs/rescue/<时间>/` 下：这是普通的 ref，`git gc` 不会删，用普通的 git 命令就能读。`git-rescue undo` 会把分支和 HEAD 放回去，并提供恢复当时没提交的修改。（两个限制：未跟踪的文件不在这个快照里，不过任何修复都不会动它们；文件处于冲突状态时，git 没法给未提交的修改做快照，这时 git-rescue 会明确告诉你。）
+- **每次修复之前都会备份** 所有分支、HEAD 和你没提交的修改（像 `git stash` 那样，但不动你的文件），存在 `refs/rescue/<时间>/` 下：这是普通的 ref，`git gc` 不会删，用普通的 git 命令就能读。文件处于冲突状态、git 没法做快照时，改动过的文件会原样复制到 `.git/rescue-files/<时间>/`。`git-rescue undo` 只撤回这次修复改动的东西（它移动、新建或删除的分支，以及 HEAD），之后又变过的东西不动，并提供恢复当时没提交的修改。未跟踪的文件不会保存，任何修复都不会动它们。
 - **选项都标了风险**：*safe*（用一条普通 git 命令就能撤销），*careful*（会移动分支或改动你的文件，事先已备份），*you do it*（需要你自己操作，比如解决冲突）。
 - `restore` 只会写到新文件名。
 - 完全本地：不联网、不收集数据、没有任何依赖。
@@ -89,11 +89,11 @@ git-rescue --dry-run        # 只显示，不修改；--json 用于脚本；-C �
 
 - 找不回 git 从来没拿到过的东西：在 `checkout .` 或 `reset --hard` 之前，既没 add 也没提交的修改。（编辑器的本地历史里可能还有。）
 - `git gc` 清理掉之后（reflog 也不引用的对象大约两周，reflog 条目 30 到 90 天），丢失的提交和文件就彻底没了。
-- 不会替你改写已经推送出去的历史：需要 force push 的修复，它会说明，由你自己决定。
+- 它从不 push。如果修复改动了你已经推送过的提交，再推送需要 `git push --force-with-lease`，由你自己决定。
 
 ## 状态
 
-0.1，开发中。测试只用在系统临时文件夹里新建的仓库（绝不碰真实仓库）：上面每种情况都会真的制造出来（reset、删分支、丢 stash、有冲突的 merge 和 rebase、残留的锁、被 force push 的远程），然后通过命令执行修复，再撤销。在这里的 git 2.19 上测试，CI 里在 GitHub 的 Windows、macOS、Linux 上测试。
+0.1，开发中。测试只用在系统临时文件夹里新建的仓库（绝不碰真实仓库）：上面每种情况都会真的制造出来（reset、删分支、丢 stash、有冲突的 merge 和 rebase、残留的锁、被 force push 的远程），然后通过命令执行修复，再撤销；还有独立审查发现的情况（不算丢失的普通 rebase 和 `stash pop`、900 条 reflog、worktree、裸仓库、非 ASCII 文件名、换行符）。在这里的 git 2.19 上测试，CI 里在 GitHub 的 Windows、macOS、Linux 上测试。
 
 ## 开发
 

@@ -14,7 +14,7 @@ import { unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 
-import { backup, backups, undoSteps } from "./backup.js";
+import { backup, backups, recordAfter, undoSteps } from "./backup.js";
 import { REMOVE_LOCK, ago, diagnose, isInstruction } from "./diagnose.js";
 import { GitError, gitRun, repoAt, short, version } from "./git.js";
 import { find, inventory, restore } from "./lost.js";
@@ -82,7 +82,7 @@ export async function main(argv) {
     const repo = repoAt(cwd);
     if (!repo) return err(`${cwd} is not inside a git repository`), 2;
     const [major, minor] = version(cwd);
-    if (major < 2 || (major === 2 && minor < 17)) say(c("33", `(git ${major}.${minor} is old; git-rescue is tested with 2.17 and later)`));
+    if (major < 2 || (major === 2 && minor < 17)) err(`git ${major}.${minor} is old; git-rescue is tested with 2.17 and later`);
 
     if (cmd === "timeline") {
       const events = timeline(repo, limit);
@@ -98,7 +98,7 @@ export async function main(argv) {
       const text = rest.join(" ");
       if (!text) return err("find what? git-rescue find \"some text\""), 2;
       const matches = find(cwd, repo, text, { ignoreCase });
-      if (json) return say(JSON.stringify(matches, null, 2)), 0;
+      if (json) return say(JSON.stringify(matches, null, 2)), matches.length ? 0 : 1;
       if (!matches.length) return say(`"${text}" is not in any lost work git still has.`), 1;
       say(`"${text}" in lost work:\n`);
       for (const m of matches) say(`  ${c("1", short(m.sha))}  ${m.where}${m.line ? `, line ${m.line}` : ""}\n      ${m.text}`);
@@ -128,8 +128,8 @@ export async function main(argv) {
 async function checkCommand(cwd, repo, o) {
   const { state, findings } = diagnose(cwd, repo);
   if (o.json) return say(JSON.stringify({ state, findings }, null, 2)), findings.some((f) => f.level !== "info") ? 1 : 0;
-  const where = state.unborn ? "no commits yet" : state.branch ? `on ${state.branch}` : `HEAD detached at ${short(state.headSha ?? "")}`;
-  const changes = state.changed || state.untracked ? `, ${state.changed} changed and ${state.untracked} untracked files` : ", nothing uncommitted";
+  const where = state.bare ? "a bare repository (no working tree)" : state.unborn ? "no commits yet" : state.branch ? `on ${state.branch}` : `HEAD detached at ${short(state.headSha ?? "")}`;
+  const changes = state.bare ? "" : state.changed || state.untracked ? `, ${state.changed} changed and ${state.untracked} untracked files` : ", nothing uncommitted";
   say(`${repo.top}: ${where}${changes}\n`);
   if (!findings.length) {
     say("Nothing looks wrong. (`git-rescue timeline` shows what happened; `git-rescue lost` what git can still give back.)");
@@ -190,16 +190,24 @@ async function apply(cwd, repo, findings, pick, o) {
   say(`\n${f.title}\n→ ${opt.title}\n`);
   for (const s of opt.steps) say(`   ${shown(s)}`);
   if (o.dry) return say("\n(dry run: nothing changed)"), 0;
+  if (isInstruction(opt.steps[0])) {
+    // It starts with something only you can do: nothing to run or back up yet.
+    say(`\nThis one starts with you: ${opt.steps[0][0]}. Then run the commands after it yourself.`);
+    return 0;
+  }
   if (!o.yes) {
     if (!o.rl) return err("not run: add --yes to apply without being asked, or run it in a terminal"), 2;
     const ok = (await o.rl.question(`\nA backup of every branch and your uncommitted changes is made first. Go ahead? [y/N] `)).trim().toLowerCase();
     if (ok !== "y" && ok !== "yes") return say("Nothing changed."), 1;
   }
   const b = backup(cwd, repo, opt.title);
-  say(c("2", `   (backup: refs/rescue/${b.stamp}; \`git-rescue undo\` puts things back)`));
-  const uncommitted = gitRun(cwd, ["status", "--porcelain", "--untracked-files=no"]).stdout.trim();
-  if (!b.worktree && uncommitted) say(c("33", "   (your uncommitted changes could not be backed up: git cannot while files are in conflict)"));
-  return runSteps(cwd, repo, opt.steps);
+  say(c("2", `   (backup: refs/rescue/${b.stamp}; \`git-rescue undo\` puts back what this changes)`));
+  if (b.files) say(c("33", `   (git cannot snapshot files in conflict: your changed files are copied as they are to ${b.files})`));
+  try {
+    return runSteps(cwd, repo, opt.steps);
+  } finally {
+    recordAfter(cwd, repo, b.stamp);
+  }
 }
 
 /** @param {string} cwd @param {{gitDir: string}} repo @param {string[][]} steps */
@@ -263,12 +271,17 @@ async function undoCommand(cwd, repo, o) {
   }
   const b = all[0];
   if (!b) return say("git-rescue has changed nothing here, so there is nothing to undo."), 0;
+  const norm = (/** @type {string} */ p) => p.replace(/\\/g, "/").toLowerCase();
+  if (b.top && norm(b.top) !== norm(repo.top)) {
+    return err(`the last fix was made in ${b.top}; run git-rescue undo there (this is another worktree of the same repository)`), 2;
+  }
   const plan = undoSteps(cwd, b);
-  say(`Back to before "${b.label}" (${b.stamp}):`);
-  if (!plan.steps.length) say("   every branch and HEAD are already where they were.");
+  say(`Undo "${b.label}" (${b.stamp}):`);
+  if (!plan.steps.length) say("   nothing to put back: the fix changed no branch or HEAD, or they moved since.");
   for (const s of plan.steps) say(`   ${shown(s)}`);
-  if (plan.created.length) say(c("2", `   (left as they are: branches made since: ${plan.created.join(", ")}; delete them with git branch -d if you like)`));
-  if (plan.restoreWorktree) say(c("2", `   Your uncommitted changes from then are saved too: ${shown(plan.restoreWorktree[0])} brings them back.`));
+  if (plan.skipped.length) say(c("33", `   Left as they are: ${plan.skipped.join("; ")}.`));
+  if (plan.restoreWorktree) say(c("2", `   Your uncommitted changes from before the fix are saved too: ${shown(plan.restoreWorktree[0])} brings them back.`));
+  if (plan.files) say(c("2", `   Your changed files from before the fix are copied in ${plan.files}.`));
   if (o.dry || !plan.steps.length) return 0;
   if (!o.yes) {
     if (!process.stdin.isTTY) return err("not run: add --yes, or run it in a terminal"), 2;
@@ -277,8 +290,12 @@ async function undoCommand(cwd, repo, o) {
     rl.close();
     if (ok !== "y" && ok !== "yes") return say("Nothing changed."), 1;
   }
-  backup(cwd, repo, `undo of ${b.stamp}`);
-  return runSteps(cwd, repo, plan.steps);
+  const mine = backup(cwd, repo, `undo of ${b.stamp}`);
+  try {
+    return runSteps(cwd, repo, plan.steps);
+  } finally {
+    recordAfter(cwd, repo, mine.stamp);
+  }
 }
 
 /** @param {string} s */

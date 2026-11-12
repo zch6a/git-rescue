@@ -9,10 +9,12 @@
  * - file contents that were added (staged) and never committed: what `reset --hard` took.
  */
 
+import { spawnSync } from "node:child_process";
 import { existsSync, writeFileSync } from "node:fs";
+import { relative, resolve as resolvePath } from "node:path";
 
 import { lostObjects } from "./diagnose.js";
-import { commitInfo, git, objectTime, readObjects, reflog, reflogNames, short, unreachableFromRefs } from "./git.js";
+import { KEEP_REFS, commitInfo, git, keepers, objectTime, readObjects, reflog, reflogNames, short, unreachableFromRefs } from "./git.js";
 
 /**
  * Commits that only reflogs keep (not on any branch, tag, remote-tracking ref or the stash).
@@ -98,7 +100,9 @@ export function find(cwd, repo, text, opts = {}) {
   /** @type {Map<string, string>} */
   const paths = new Map();
   if (commits.length) {
-    const listed = git(cwd, ["rev-list", "--objects", ...commits.map((c) => c.sha), "--not", "--branches", "--tags", "--remotes"], { allowFail: true });
+    const keep = keepers(cwd);
+    const listed = git(cwd, ["rev-list", "--objects", "--stdin", "--not", ...KEEP_REFS], { allowFail: true,
+      input: [...commits.map((c) => c.sha), ...keep.map((k) => `^${k}`)].join("\n") + "\n" });
     for (const line of listed.split("\n")) {
       const [sha, ...rest] = line.split(" ");
       if (rest.length && /^[0-9a-f]{40}$/.test(sha)) paths.set(sha, rest.join(" "));
@@ -135,7 +139,17 @@ export function restore(cwd, id, file) {
   if (!/^[0-9a-f]{40}$/.test(full)) throw new Error(`no object ${id} in this repository`);
   const type = git(cwd, ["cat-file", "-t", full]).trim();
   let data;
-  if (type === "blob") data = readObjects(cwd, [full], Number.MAX_SAFE_INTEGER).get(full);
+  if (type === "blob") {
+    // Through git's filters for the name it is restored as (line endings by core.autocrlf and .gitattributes,
+    // LFS and other smudge filters), as `git checkout` would write it; the raw contents if the file is outside
+    // the repository or git is too old for --filters (2.11).
+    const top = git(cwd, ["rev-parse", "--show-toplevel"], { allowFail: true }).trim();
+    const rel = top ? relative(top, resolvePath(cwd, file)).replace(/\\/g, "/") : "";
+    const filtered = rel && !rel.startsWith("..")
+      ? spawnSync("git", ["cat-file", "--filters", `--path=${rel}`, full], { cwd, encoding: null, maxBuffer: 1 << 30, windowsHide: true })
+      : null;
+    data = filtered && filtered.status === 0 ? filtered.stdout : readObjects(cwd, [full], Number.MAX_SAFE_INTEGER).get(full);
+  }
   else if (type === "commit") data = Buffer.from(git(cwd, ["show", "--stat", "--patch", full]));
   else throw new Error(`${id} is a ${type}; restore takes a file content or a commit`);
   if (!data) throw new Error(`could not read ${id}`);

@@ -29,6 +29,7 @@ const env = () => ({
   PAGER: "cat",
   GIT_TERMINAL_PROMPT: "0",
   GIT_OPTIONAL_LOCKS: "0", // reading the status must not take the index lock
+  GIT_EDITOR: "true", // `rebase --continue` and the like keep their message instead of opening an editor no one sees
 });
 
 /**
@@ -47,7 +48,7 @@ export function git(cwd, args, opts = {}) {
     encoding: opts.raw ? null : "utf8", // null: bytes, for object contents
     windowsHide: true,
   });
-  if (r.error) throw new GitError(`could not run git: ${r.error.message}`, args, null);
+  if (r.error) throw new GitError(`could not run git ${args[0]}: ${r.error.message.slice(0, 200)}`, args.slice(0, 3), null);
   if (r.status !== 0 && !opts.allowFail) {
     const err = String(r.stderr || "").trim();
     throw new GitError(err || `git ${args[0]} failed (exit ${r.status})`, args, r.status);
@@ -68,11 +69,13 @@ export function gitRun(cwd, args) {
  * @param {string} cwd
  */
 export function repoAt(cwd) {
-  const out = git(cwd, ["rev-parse", "--show-toplevel", "--absolute-git-dir", "--git-common-dir"], { allowFail: true }).trim().split("\n");
-  if (out.length < 3 || !out[1]) return null;
-  const [top, gitDir, common] = out;
+  const bare = git(cwd, ["rev-parse", "--is-bare-repository"], { allowFail: true }).trim() === "true";
+  const out = git(cwd, ["rev-parse", "--absolute-git-dir", "--git-common-dir"], { allowFail: true }).trim().split("\n");
+  if (out.length < 2 || !out[0]) return null;
+  const [gitDir, common] = out;
+  const top = bare ? gitDir : git(cwd, ["rev-parse", "--show-toplevel"], { allowFail: true }).trim();
   const commonDir = common.match(/^([A-Za-z]:)?[\\/]/) ? common : join(cwd, common);
-  return { top, gitDir, commonDir: existsSync(commonDir) ? commonDir : gitDir };
+  return { top, gitDir, commonDir: existsSync(commonDir) ? commonDir : gitDir, bare };
 }
 
 /** @param {string} cwd @param {string} rev @returns {string|null} */
@@ -84,6 +87,20 @@ export function resolve(cwd, rev) {
 /** @param {string} cwd @param {string} sha */
 export function exists(cwd, sha) {
   return gitRun(cwd, ["cat-file", "-e", sha]).code === 0;
+}
+
+/**
+ * Which of these objects the repository has, in one `cat-file --batch-check` (ids go through stdin: a command
+ * line holds about 800 of them on Windows, and a busy repository's reflogs hold more).
+ * @param {string} cwd
+ * @param {string[]} shas
+ * @returns {string[]}
+ */
+export function present(cwd, shas) {
+  const unique = [...new Set(shas)].filter((s) => /^[0-9a-f]{40}$/.test(s) && !/^0+$/.test(s));
+  if (!unique.length) return [];
+  const out = git(cwd, ["cat-file", "--batch-check"], { input: unique.join("\n") + "\n" });
+  return out.split("\n").filter((l) => / (commit|tree|blob|tag) \d+$/.test(l)).map((l) => l.slice(0, 40));
 }
 
 /**
@@ -113,16 +130,50 @@ export function branches(cwd) {
  * @param {string[]} shas
  * @returns {string[]}
  */
-export function unreachableFromRefs(cwd, shas) {
-  const present = shas.filter((s) => exists(cwd, s));
-  if (!present.length) return [];
-  const out = git(cwd, ["rev-list", ...present, "--not", "--branches", "--tags", "--remotes", ...stashRefArg(cwd)], { allowFail: true });
-  return out.split("\n").filter(Boolean);
+export function unreachableFromRefs(cwd, shas, keep = keepers(cwd)) {
+  const have = present(cwd, shas);
+  if (!have.length) return [];
+  // The ids through stdin, then everything that keeps commits: every ref but git-rescue's own backups (branches,
+  // tags, remotes, notes, refs/original ...; --glob=refs/* and not --all, which counts HEAD too, and commits on a
+  // detached HEAD are what may be lost) and every stash on the stash list, not only the newest.
+  const out = git(cwd, ["rev-list", "--stdin", "--not", ...KEEP_REFS], { allowFail: true, input: [...have, ...keep.map((k) => `^${k}`)].join("\n") + "\n" });
+  return out.split("\n").filter((l) => /^[0-9a-f]{40}$/.test(l));
 }
 
-/** @param {string} cwd */
-function stashRefArg(cwd) {
-  return resolve(cwd, "refs/stash") ? ["refs/stash"] : [];
+/** The refs that keep commits, for rev-list: all of refs/, less git-rescue's backups. */
+export const KEEP_REFS = ["--exclude=refs/rescue/*", "--glob=refs/*"];
+
+/**
+ * Commits that are kept though no ref names them: the stashes below the newest (stash@{1} ...), which only
+ * the stash's reflog holds, and the HEADs of other worktrees (git 2.19's fsck ignores them).
+ * @param {string} cwd
+ * @returns {string[]}
+ */
+export function keepers(cwd) {
+  const out = [];
+  const stashes = git(cwd, ["log", "-g", "--format=%H", "refs/stash", "--"], { allowFail: true });
+  out.push(...stashes.split("\n").filter((l) => /^[0-9a-f]{40}$/.test(l)));
+  // Other worktrees' HEADs, not this one's: commits on this detached HEAD are exactly what may be about to be lost.
+  const here = git(cwd, ["rev-parse", "--show-toplevel"], { allowFail: true }).trim().replace(/\\/g, "/").toLowerCase();
+  for (const w of worktrees(cwd)) if (w.head && w.path.replace(/\\/g, "/").toLowerCase() !== here) out.push(w.head);
+  return [...new Set(out)];
+}
+
+/**
+ * The repository's worktrees: path, HEAD commit and branch (`worktree list --porcelain`, git 2.7+).
+ * @param {string} cwd
+ * @returns {{path: string, head: string | null, branch: string | null}[]}
+ */
+export function worktrees(cwd) {
+  const out = git(cwd, ["worktree", "list", "--porcelain"], { allowFail: true });
+  /** @type {{path: string, head: string | null, branch: string | null}[]} */
+  const list = [];
+  for (const block of out.split(/\n\n+/)) {
+    const path = block.match(/^worktree (.+)$/m)?.[1];
+    if (!path) continue;
+    list.push({ path, head: block.match(/^HEAD ([0-9a-f]{40})$/m)?.[1] ?? null, branch: block.match(/^branch refs\/heads\/(.+)$/m)?.[1] ?? null });
+  }
+  return list;
 }
 
 /**
@@ -171,9 +222,9 @@ export function reflogNames(repo) {
 export function commitInfo(cwd, shas) {
   /** @type {Map<string, {subject: string, time: number, parents: string[]}>} */
   const out = new Map();
-  const present = [...new Set(shas)].filter((s) => exists(cwd, s));
-  if (!present.length) return out;
-  const text = git(cwd, ["show", "-s", "--format=%H%x00%ct%x00%P%x00%s", ...present]);
+  const have = present(cwd, shas);
+  if (!have.length) return out;
+  const text = git(cwd, ["log", "--no-walk=unsorted", "--stdin", "--format=%H%x00%ct%x00%P%x00%s"], { input: have.join("\n") + "\n", allowFail: true });
   for (const line of text.split("\n")) {
     const [sha, ct, parents, subject] = line.split("\0");
     if (sha && /^[0-9a-f]{40}$/.test(sha)) out.set(sha, { subject: subject ?? "", time: Number(ct) * 1000, parents: parents ? parents.split(" ") : [] });
@@ -188,7 +239,8 @@ export function commitInfo(cwd, shas) {
  * @returns {{type: string, sha: string}[]}
  */
 export function unreachableObjects(cwd) {
-  const out = git(cwd, ["fsck", "--unreachable", "--no-progress"], { allowFail: true });
+  // --connectivity-only: the same list, without checking every object's contents (11 times faster on a big repo).
+  const out = git(cwd, ["fsck", "--unreachable", "--connectivity-only", "--no-progress"], { allowFail: true });
   const found = [];
   for (const line of out.split("\n")) {
     const m = line.match(/^unreachable (commit|blob|tree|tag) ([0-9a-f]{40})/);

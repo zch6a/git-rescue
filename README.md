@@ -61,15 +61,20 @@ It reads the repository's state, not timing guesses: each finding is something t
 commits it concerns.
 
 - **An operation stopped halfway**: a rebase, `am`, merge, cherry-pick or revert waiting on conflicts (which
-  files), a bisect left running. Options: abandon it (back exactly to before), or finish it.
+  files), a bisect left running. Options: abandon it (back to before; your edits so far are copied to
+  `.git/rescue-files/` first, since an abort resets them), or finish it.
 - **A stale `.git/index.lock`** that makes git refuse everything.
 - **Commits on no branch**: a detached HEAD with commits, or commits left behind when you switched away from
-  one.
-- **Commits that fell off a branch**: a `reset`, a rebase, a forced pull; an amend (as information).
+  one or reset while on it.
+- **Commits that fell off a branch**, whatever moved it: a `reset`, a `branch -f` or `checkout -B`, a forced
+  pull, a rebase that dropped a commit, an amend that changed the content (as information). A rebase or
+  an amend that kept the changes is not a loss: commits are compared by their changes, not their ids.
 - **A deleted branch** whose commits no other branch has (merged branches are not reported).
-- **A dropped stash** (`stash drop`, `stash clear`): back onto the stash list.
+- **A dropped stash** (`stash drop`, `stash clear`) whose changes are not in your files or commits: back onto
+  the stash list. (A `stash pop` drops the stash too, after applying it: that is not reported.)
 - **Files you staged and never committed**, lost to `reset --hard` or `checkout .`: the reflog cannot see
-  these; git still has their contents until `git gc` prunes them (about two weeks).
+  these; git still has their contents until `git gc` prunes them (about two weeks). Shown as information,
+  since adding a file, editing it and adding it again leaves the first version behind too.
 - **An upstream someone force-pushed**: your branch still has the old history, and pulling would merge it
   back in; the option replays only your own commits onto the new one.
 
@@ -95,9 +100,10 @@ It needs Node 18+ and git (tested with git 2.19, from 2018, and the current one)
   shows its exact git commands first and runs them only after you say yes (or with `--yes`).
 - **Before any fix it backs up** every branch, HEAD and your uncommitted changes (as `git stash` would,
   without touching your files) under `refs/rescue/<time>/`, plain refs that `git gc` keeps and plain git
-  can read. `git-rescue undo` puts the branches and HEAD back and offers your saved changes again. (Two
-  limits: untracked files are not in that snapshot, though no fix touches them; and while files are in
-  conflict, git cannot snapshot uncommitted changes, which git-rescue then says.)
+  can read; while files are in conflict, when git cannot make that snapshot, it copies the changed files
+  to `.git/rescue-files/<time>/` instead. `git-rescue undo` puts back what the fix changed (a branch it moved,
+  made or deleted, and HEAD), leaves alone anything that moved since, and offers your saved changes
+  again. Untracked files are not saved; no fix touches them.
 - **Options are rated**: *safe* (nothing that a plain git command cannot undo), *careful* (moves a branch
   or your files; backed up first), *you do it* (resolving a conflict).
 - `restore` writes only to a new file name.
@@ -109,15 +115,17 @@ It needs Node 18+ and git (tested with git 2.19, from 2018, and the current one)
   `checkout .` or `reset --hard`. (Your editor's local history may have them.)
 - After `git gc` has pruned them (objects no reflog reaches: about two weeks; reflog entries: 30 to 90
   days), lost commits and files are gone for good.
-- It does not rewrite published history for you: when a fix would need a force push, it says so and
-  leaves that to you.
+- It never pushes. If a fix changes commits you had already pushed, pushing them again needs
+  `git push --force-with-lease`, which is yours to decide.
 
 ## Status
 
 0.1, in development. Tested with throwaway repositories made in the system's temp folder (never a real
 one): every finding above is staged for real (a reset, a deleted branch, a dropped stash, a conflicted
 merge and rebase, a stale lock, a force-pushed remote), then the fix is applied through the command and
-undone again. On git 2.19 here, and on the git of GitHub's Windows, macOS and Linux runners in CI.
+undone again; and the cases an independent review found (routine rebases and `stash pop`s that are not
+losses, 900 reflog entries, worktrees, a bare repository, non-ASCII file names, line endings). On git 2.19
+here, and on the git of GitHub's Windows, macOS and Linux runners in CI.
 
 ## Develop
 
