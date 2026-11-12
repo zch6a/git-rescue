@@ -88,6 +88,11 @@ commits it concerns.
 - **Files you staged and never committed**, lost to `reset --hard` or `checkout .`: the reflog cannot see
   these; git still has their contents until `git gc` prunes them (about two weeks). Shown as information,
   since adding a file, editing it and adding it again leaves the first version behind too.
+- **Commits that nothing points to, not even the reflog**: the reflog entries expired, or the repository
+  keeps no reflog, as a bare repository on a server does (a force push leaves the old commits like this).
+  Commits whose changes are already on the branch (an old rebase) are left out.
+- **`git gc` at work**: it deletes what nothing points to once it is two weeks old; git-rescue says to let it
+  finish before saving anything.
 - **An upstream someone force-pushed**: your branch still has the old history, and pulling would merge it
   back in; the option replays only your own commits onto the new one.
 
@@ -120,7 +125,7 @@ changes meaning; new fields can appear in a 1. Exit status: 0 nothing wrong (or 
 ```jsonc
 // git-rescue --json
 {
-  "format": 1, "version": "0.2.0",
+  "format": 1, "version": "0.3.0",
   "state": { "branch": "main", "headSha": "…", "unborn": false, "bare": false, "operation": null,
              "conflicted": [], "changed": 0, "untracked": 0, "lockAge": null,
              "superproject": null, "submodules": [] },
@@ -167,14 +172,21 @@ matches}`.
 
 ## Status
 
-0.2, in development ([changes](CHANGELOG.md), [contributing](CONTRIBUTING.md)). Tested with throwaway repositories made in the system's temp folder (never a real
-one): every finding above is staged for real (a reset, a deleted branch, a dropped stash, a conflicted
-merge and rebase, a stale lock, a force-pushed remote), then the fix is applied through the command and
-undone again; submodules, a path with spaces and
-Chinese characters, and a repository with 30,000 commits and 3,000 lost file versions (the report takes about
-3 s on Windows); and the cases an independent review found (routine rebases and `stash pop`s that are not
-losses, 900 reflog entries, worktrees, a bare repository, non-ASCII file names, line endings). On git 2.19
-here, and on the git of GitHub's Windows, macOS and Linux runners in CI.
+0.3, in development ([changes](CHANGELOG.md), [contributing](CONTRIBUTING.md)). Tested only with throwaway
+repositories made in the system's temp folder, never a real one:
+
+- every kind of finding is staged for real, every option git-rescue runs is applied through the command, and
+  then checked: the finding is gone, an uncommitted edit elsewhere survived, and `undo` puts every branch and
+  HEAD back;
+- the menu as a person uses it: a pick, a yes or no, Enter, an answer typed ahead, the input ending;
+- edge cases: an expired reflog, a bare repository after a force push, a shallow clone, sparse checkout,
+  submodules, worktrees, branch names with `/`, `#` and Chinese characters, a path with spaces, git config that
+  changes git's output (`color.ui=always`, `format.pretty`, `diff.external`), and a repository with 30,000
+  commits and 3,000 lost file versions (the report takes about 3 s on Windows);
+- what an independent review found (routine rebases and `stash pop`s that are not losses, 900 reflog
+  entries, non-ASCII file names, line endings).
+
+On git 2.19 here, and on the git of GitHub's Windows, macOS and Linux runners in CI.
 
 ## Develop
 

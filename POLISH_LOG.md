@@ -77,3 +77,27 @@ Found while testing, in my own scenario script: it used `init.defaultBranch`, wh
 - A repository in the middle of `git gc` (objects being packed while fsck reads).
 - Many submodules: the parent only names them; checking them all from the parent.
 - A second independent review (round 4 or 5).
+
+## Round 3 — 2026-11-12 (0.3.0)
+
+**Every option, run for real.** `test/matrix.test.js` stages each of the 18 kinds of finding in a fresh repository (with an uncommitted edit to another file where the situation allows one), applies every option git-rescue runs with `fix --yes`, and checks three things: the finding is gone, the edit survived, and `undo --yes` puts every branch and HEAD back exactly. Until now only some options had an end-to-end test. It found two bugs on the first run:
+- **On a detached HEAD, "Go back to main" ran `git checkout "(HEAD detached at a03eab6)"`** and failed: git 2.19's `branch --contains --format` lists that line among the branches. Now `for-each-ref --contains ... refs/heads`.
+- **`checkout -B` was reported as "`branch -f`"**: git writes "branch: Reset to ..." for both. Now said as either.
+
+**The menu, as a person uses it.** The Terminal panel can start a command but not type into it, so `test/menu.test.js` runs the real CLI with stdin marked as a terminal (a `--import data:` one-liner) and pipes the answers. Found: **an answer typed ahead was lost**. Typing "1a", Enter, "y", Enter faster than git-rescue asked lost the "y" (readline's `question()` drops lines that arrive with no question pending); git-rescue then waited for an answer that had come, and when the input ended it exited 0 having done nothing and said nothing. Now typed lines wait in a queue for their question, and the end of the input is a no ("No answer: nothing changed.", exit 1). In the real terminal (Terminal panel, a repository staged in the temp folder) the report and the prompt look as intended.
+
+**Edge cases staged in the temp folder**
+- **An expired reflog, and a bare repository after a force push** (bare repositories keep no reflog): the lost commits were only in `lost`; the report said "Nothing looks wrong". New finding "commits that nothing points to, not even the reflog", one option per line of history; commits whose patch is already on HEAD (an old rebase whose reflog expired) are left out, so old rebases do not come back as alarms.
+- **`git gc` running**: it deletes exactly what git-rescue finds, once two weeks old. New finding when a `gc.pid` younger than 12 hours (git's own limit) is there; a warning when something is at stake, else information.
+- **The user's git config**: with `color.ui=always`, `format.pretty=oneline` and `diff.external`, `restore` of a commit wrote colour codes and a single line. Now `git show --no-color --no-ext-diff --no-textconv --no-show-signature --pretty=fuller`; `log` gets `--no-show-signature`, `diff` `--no-ext-diff --no-color`. The report itself was unaffected (explicit formats everywhere).
+- **Shallow clone, sparse checkout, branch names with `/`, `#`, `@` and Chinese**: correct as they were; now tested.
+- Reading the code: `restore ID FILE` wrote FILE relative to the shell's folder but chose git's line-ending filters as if FILE were relative to the `-C` folder; now both use where the user is.
+- "Reflog turned off" (`core.logAllRefUpdates=false`) turned out not to be a case of its own: git still appends to reflog files that already exist; a repository without any is the bare one above.
+
+Mistakes of mine on the way, in tests only: a scenario cloned a bare repository whose HEAD is `master` under git 2.19 and got an empty branch (now `clone -b main`); a merge expected to stop on a conflict was run with the helper that throws.
+
+**Tests**: 75 (+31: 18 matrix, 5 menu, 8 edge cases). Before the fixes, 9 of them fail.
+
+**Open**
+- `am` with a patch that does not apply at all (no conflict, just "patch does not apply").
+- A second independent review, in round 4 or 5.

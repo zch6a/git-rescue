@@ -12,7 +12,7 @@
 
 import { existsSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { createInterface } from "node:readline/promises";
+import { createInterface } from "node:readline";
 
 import { backup, backups, recordAfter, undoSteps } from "./backup.js";
 import { REMOVE_LOCK, ago, diagnose, isInstruction } from "./diagnose.js";
@@ -20,7 +20,7 @@ import { GitError, gitRun, repoAt, short, version } from "./git.js";
 import { find, inventory, restore } from "./lost.js";
 import { line, timeline } from "./timeline.js";
 
-const VERSION = "0.2.0";
+const VERSION = "0.3.0";
 /** The shape of --json output; it goes up only when a field is removed or changes meaning (see README). */
 const JSON_FORMAT = 1;
 const HELP = `git-rescue ${VERSION}: what just happened to my repository, and how do I get my work back?
@@ -68,6 +68,44 @@ function block(text, pad) {
   }
   return out.join("\n");
 }
+
+/**
+ * @typedef {{ask: (prompt: string) => Promise<string | null>, close: () => void}} Asker
+ */
+
+/**
+ * Questions to the person at the terminal. Lines typed before a question is asked wait for it (with readline's
+ * own question(), "1a", Enter, "y", Enter typed quickly lost the "y" and git-rescue waited forever); the end of
+ * the input is no answer (null), which is never a yes.
+ * @returns {Asker}
+ */
+function asker() {
+  const rl = createInterface({ input: process.stdin, terminal: false });
+  /** @type {string[]} */
+  const lines = [];
+  /** @type {((line: string | null) => void) | null} */
+  let waiting = null;
+  let closed = false;
+  rl.on("line", (l) => {
+    if (waiting) { const w = waiting; waiting = null; w(l); } else lines.push(l);
+  });
+  rl.on("close", () => {
+    closed = true;
+    if (waiting) { const w = waiting; waiting = null; w(null); }
+  });
+  return {
+    ask(prompt) {
+      process.stdout.write(prompt);
+      if (lines.length) return Promise.resolve(/** @type {string} */ (lines.shift()));
+      if (closed) return Promise.resolve(null);
+      return new Promise((r) => { waiting = r; });
+    },
+    close: () => rl.close(),
+  };
+}
+
+/** A yes to "Go ahead? [y/N]". @param {string | null} answer */
+const isYes = (answer) => /^(y|yes)$/i.test((answer ?? "").trim());
 
 /** How a step is shown. @param {string[]} step */
 function shown(step) {
@@ -198,10 +236,10 @@ async function checkCommand(cwd, repo, o) {
     if (fixable) say("To apply one: git-rescue fix N[a]  (for example fix 1a); nothing has been changed.");
     return findings.some((f) => f.level !== "info") ? 1 : 0;
   }
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const rl = asker();
   try {
-    const answer = (await rl.question("Fix one? Type its number and letter (like 1a), or press Enter to leave everything as it is: ")).trim();
-    if (!answer) return say("Nothing changed."), 1;
+    const answer = ((await rl.ask("Fix one? Type its number and letter (like 1a), or press Enter to leave everything as it is: ")) ?? "").trim();
+    if (!answer) return say("\nNothing changed."), 1;
     return await apply(cwd, repo, findings, answer, { dry: false, yes: false, rl });
   } finally {
     rl.close();
@@ -213,7 +251,7 @@ async function fixCommand(cwd, repo, pick, o) {
   if (!pick) return err("fix what? git-rescue fix N[a] (the numbers git-rescue shows)"), 2;
   const { findings } = diagnose(cwd, repo);
   if (o.yes || o.dry || !process.stdin.isTTY) return apply(cwd, repo, findings, pick, { ...o, rl: null });
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const rl = asker();
   try {
     return await apply(cwd, repo, findings, pick, { ...o, rl });
   } finally {
@@ -227,7 +265,7 @@ async function fixCommand(cwd, repo, pick, o) {
  * @param {{top: string, gitDir: string, commonDir: string}} repo
  * @param {import("./diagnose.js").Finding[]} findings
  * @param {string} pick
- * @param {{dry: boolean, yes: boolean, rl: import("node:readline/promises").Interface | null}} o
+ * @param {{dry: boolean, yes: boolean, rl: Asker | null}} o
  */
 async function apply(cwd, repo, findings, pick, o) {
   const m = pick.match(/^(\d+)([a-z]?)$/i);
@@ -245,8 +283,8 @@ async function apply(cwd, repo, findings, pick, o) {
   }
   if (!o.yes) {
     if (!o.rl) return err("not run: add --yes to apply without being asked, or run it in a terminal"), 2;
-    const ok = (await o.rl.question(`\nA backup of every branch and your uncommitted changes is made first. Go ahead? [y/N] `)).trim().toLowerCase();
-    if (ok !== "y" && ok !== "yes") return say("Nothing changed."), 1;
+    const ok = await o.rl.ask(`\nA backup of every branch and your uncommitted changes is made first. Go ahead? [y/N] `);
+    if (!isYes(ok)) return say(ok === null ? "\nNo answer: nothing changed." : "Nothing changed."), 1;
   }
   const b = backup(cwd, repo, opt.title);
   say(c("2", `   (backup: refs/rescue/${b.stamp}; \`git-rescue undo\` puts back what this changes)`));
@@ -333,10 +371,10 @@ async function undoCommand(cwd, repo, o) {
   if (o.dry || !plan.steps.length) return 0;
   if (!o.yes) {
     if (!process.stdin.isTTY) return err("not run: add --yes, or run it in a terminal"), 2;
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    const ok = (await rl.question("Go ahead? [y/N] ")).trim().toLowerCase();
+    const rl = asker();
+    const ok = await rl.ask("Go ahead? [y/N] ");
     rl.close();
-    if (ok !== "y" && ok !== "yes") return say("Nothing changed."), 1;
+    if (!isYes(ok)) return say(ok === null ? "\nNo answer: nothing changed." : "Nothing changed."), 1;
   }
   const mine = backup(cwd, repo, `undo of ${b.stamp}`);
   try {

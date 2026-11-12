@@ -189,7 +189,7 @@ export const KEEP_REFS = ["--exclude=refs/rescue/*", "--glob=refs/*"];
 export function keepers(cwd) {
   return remember(`keepers ${cwd}`, () => {
     const out = [];
-    const stashes = refs(cwd).has("refs/stash") ? git(cwd, ["log", "-g", "--format=%H", "refs/stash", "--"], { allowFail: true }) : "";
+    const stashes = refs(cwd).has("refs/stash") ? git(cwd, ["log", "-g", "--no-show-signature", "--format=%H", "refs/stash", "--"], { allowFail: true }) : "";
     out.push(...stashes.split("\n").filter((l) => /^[0-9a-f]{40}$/.test(l)));
     // Other worktrees' HEADs, not this one's: commits on this detached HEAD are exactly what may be about to be lost.
     const here = toplevel(cwd);
@@ -267,7 +267,7 @@ export function commitInfo(cwd, shas) {
   const out = new Map();
   const have = present(cwd, shas);
   if (!have.length) return out;
-  const text = git(cwd, ["log", "--no-walk=unsorted", "--stdin", "--format=%H%x00%ct%x00%P%x00%s"], { input: have.join("\n") + "\n", allowFail: true });
+  const text = git(cwd, ["log", "--no-walk=unsorted", "--no-show-signature", "--stdin", "--format=%H%x00%ct%x00%P%x00%s"], { input: have.join("\n") + "\n", allowFail: true });
   for (const line of text.split("\n")) {
     const [sha, ct, parents, subject] = line.split("\0");
     if (sha && /^[0-9a-f]{40}$/.test(sha)) out.set(sha, { subject: subject ?? "", time: Number(ct) * 1000, parents: parents ? parents.split(" ") : [] });

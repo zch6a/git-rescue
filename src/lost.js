@@ -13,7 +13,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, writeFileSync } from "node:fs";
 import { basename, dirname, resolve as resolvePath } from "node:path";
 
-import { lostObjects } from "./diagnose.js";
+import { hideStashParts, lostObjects } from "./diagnose.js";
 import { KEEP_REFS, commitInfo, git, keepers, objectSizes, objectTime, readObjects, reflog, reflogNames, short, toplevel, unreachableFromRefs } from "./git.js";
 
 /**
@@ -59,18 +59,6 @@ function gather(cwd, repo) {
       .sort((a, b) => (b.time ?? 0) - (a.time ?? 0)),
   };
   return { inventory, contents };
-}
-
-/**
- * A stash is three commits: the work ("WIP on main: ..."), the index ("index on main: ...") and, with -u, the
- * untracked files. Only the first means something to the user; the others are left out when it is listed.
- * @template {{sha: string, subject: string, parents: string[]}} C
- * @param {C[]} commits
- * @returns {C[]}
- */
-export function hideStashParts(commits) {
-  const parts = new Set(commits.filter((c) => /^(WIP on|On) [^:]+:/.test(c.subject)).flatMap((c) => c.parents.slice(1)));
-  return commits.filter((c) => !(parts.has(c.sha) && /^(index on|untracked files on) [^:]+:/.test(c.subject)));
 }
 
 /** The first non-empty line of a content, or "(binary)". @param {Buffer | undefined} buf */
@@ -142,8 +130,10 @@ export function find(cwd, repo, text, opts = {}) {
  * @param {string} file
  */
 export function restore(cwd, id, file) {
+  // FILE is where the user is (their shell's folder), not where -C points, for writing and for git's filters alike.
+  const target = resolvePath(file);
   if (!/^[0-9a-f]{6,40}$/.test(id)) throw new Error(`"${id}" is not an object id (the hex code git-rescue lost shows)`);
-  if (existsSync(file)) throw new Error(`${file} already exists; choose a new name (git-rescue never overwrites a file)`);
+  if (existsSync(target)) throw new Error(`${file} already exists; choose a new name (git-rescue never overwrites a file)`);
   const full = git(cwd, ["rev-parse", "--verify", "--quiet", id], { allowFail: true }).trim();
   if (!/^[0-9a-f]{40}$/.test(full)) throw new Error(`no object ${id} in this repository`);
   const type = git(cwd, ["cat-file", "-t", full]).trim();
@@ -154,7 +144,6 @@ export function restore(cwd, id, file) {
     // the repository or git is too old for --filters (2.11).
     // git says where the file's folder is in the repository: comparing paths here would miss the same folder
     // spelled differently (a Windows short name like RUNNER~1, a symlink, letter case).
-    const target = resolvePath(cwd, file);
     const where = existsSync(dirname(target))
       ? git(dirname(target), ["rev-parse", "--show-toplevel", "--show-prefix"], { allowFail: true }).split("\n")
       : [];
@@ -165,9 +154,9 @@ export function restore(cwd, id, file) {
       : null;
     data = filtered && filtered.status === 0 ? filtered.stdout : readObjects(cwd, [full], Number.MAX_SAFE_INTEGER).get(full);
   }
-  else if (type === "commit") data = Buffer.from(git(cwd, ["show", "--stat", "--patch", full]));
+  else if (type === "commit") data = Buffer.from(git(cwd, ["show", "--no-color", "--no-ext-diff", "--no-textconv", "--no-show-signature", "--pretty=fuller", "--stat", "--patch", full]));
   else throw new Error(`${id} is a ${type}; restore takes a file content or a commit`);
   if (!data) throw new Error(`could not read ${id}`);
-  writeFileSync(file, data, { flag: "wx" });
+  writeFileSync(target, data, { flag: "wx" });
   return { type, bytes: data.length, sha: full };
 }

@@ -75,6 +75,8 @@ Saved the file (38 bytes) to notes.md.
 - **被删掉的分支**，而且它的提交别的分支都没有（已合并的分支不会报）。
 - **被丢掉、而且改动不在你的文件或提交里的 stash**（`stash drop`、`stash clear`）：放回 stash 列表。（`stash pop` 应用之后也会丢掉 stash，这种不会报。）
 - **已暂存但从未提交的文件**，被 `reset --hard` 或 `checkout .` 弄丢的：reflog 看不到它们，但在 `git gc` 清理之前（大约两周），git 还留着它们的内容。只作提示，因为 add 一个文件、再改、再 add，也会留下前一个版本。
+- **连 reflog 都不再指向的提交**：reflog 条目过期了，或者仓库根本不记 reflog（服务器上的裸仓库就不记，force push 之后旧提交就是这种状态）。改动已经在分支上的提交（比如很久以前的 rebase）不报。
+- **正在运行的 `git gc`**：它会删掉超过两周、没有任何东西指向的对象；git-rescue 会提醒你等它结束再找回。
 - **别人 force push 过的上游分支**：你的分支还带着旧历史，这时 pull 会把旧历史又合并回来；对应的修复只把你自己的提交接到新历史上。
 
 每一条都会列出涉及的东西：提交（id 和标题）、stash 改过的文件、丢失文件的第一行。在子模块里，HEAD 停在父仓库记录的那个提交上（detached）是 git 的正常做法，不算问题；在父仓库里会列出它的子模块，子模块要单独检查（`-C lib`）。
@@ -101,7 +103,7 @@ git-rescue --dry-run        # 只显示，不修改；--json 用于脚本；-C �
 ```jsonc
 // git-rescue --json
 {
-  "format": 1, "version": "0.2.0",
+  "format": 1, "version": "0.3.0",
   "state": { "branch": "main", "headSha": "…", "unborn": false, "bare": false, "operation": null,
              "conflicted": [], "changed": 0, "untracked": 0, "lockAge": null,
              "superproject": null, "submodules": [] },
@@ -135,7 +137,14 @@ git-rescue --dry-run        # 只显示，不修改；--json 用于脚本；-C �
 
 ## 状态
 
-0.2，开发中（[更新记录](CHANGELOG.md)、[参与贡献](CONTRIBUTING.md)）。测试只用在系统临时文件夹里新建的仓库（绝不碰真实仓库）：上面每种情况都会真的制造出来（reset、删分支、丢 stash、有冲突的 merge 和 rebase、残留的锁、被 force push 的远程），然后通过命令执行修复，再撤销；还有子模块、路径带空格和中文、有 3 万个提交和 3000 个丢失文件版本的仓库（在 Windows 上报告大约 3 秒）；以及独立审查发现的情况（不算丢失的普通 rebase 和 `stash pop`、900 条 reflog、worktree、裸仓库、非 ASCII 文件名、换行符）。在这里的 git 2.19 上测试，CI 里在 GitHub 的 Windows、macOS、Linux 上测试。
+0.3，开发中（[更新记录](CHANGELOG.md)、[参与贡献](CONTRIBUTING.md)）。测试只用在系统临时文件夹里新建的仓库，绝不碰真实仓库：
+
+- 每一种问题都会真的制造出来，git-rescue 能执行的每个选项都通过命令执行一遍，然后检查：问题消失了、别处没提交的修改还在、`undo` 把每个分支和 HEAD 都放回原处；
+- 像真人那样使用菜单：选一项、回答是或否、直接回车、提前输入答案、输入中途结束；
+- 边角情况：reflog 已过期、force push 之后的裸仓库、浅克隆、稀疏检出、子模块、worktree、名字里带 `/`、`#` 和中文的分支、带空格的路径、会改变 git 输出的配置（`color.ui=always`、`format.pretty`、`diff.external`），以及有 3 万个提交和 3000 个丢失文件版本的仓库（在 Windows 上报告大约 3 秒）；
+- 独立审查发现的情况（不算丢失的普通 rebase 和 `stash pop`、900 条 reflog、非 ASCII 文件名、换行符）。
+
+在这里的 git 2.19 上测试，CI 里在 GitHub 的 Windows、macOS、Linux 上测试。
 
 ## 开发
 

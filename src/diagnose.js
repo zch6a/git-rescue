@@ -126,8 +126,10 @@ export function diagnose(cwd, repo) {
   movedAwayOnHead(ctx, st);
   const objs = lostObjects(cwd, keep);
   droppedStashes(cwd, objs, ctx.add, st);
+  unreachableCommits(ctx, objs);
   lostStaged(cwd, repo, objs, ctx.add);
   upstreamRewritten(cwd, repo, st, ctx.add);
+  gcRunning(repo, findings, ctx.add);
 
   const order = { problem: 0, warning: 1, info: 2 };
   findings.sort((a, b) => order[a.level] - order[b.level]);
@@ -272,7 +274,8 @@ function detached(ctx, headSha, superproject) {
       options: [],
     });
   } else {
-    const on = git(ctx.cwd, ["branch", "--contains", headSha, "--format=%(refname:short)"], { allowFail: true }).split("\n").filter(Boolean);
+    // for-each-ref, not `branch --contains`: git 2.19 lists "(HEAD detached at ...)" there as if it were a branch.
+    const on = git(ctx.cwd, ["for-each-ref", "--contains", headSha, "--format=%(refname:short)", "refs/heads"], { allowFail: true }).split("\n").filter(Boolean);
     ctx.add({
       id: "detached",
       level: "info",
@@ -337,7 +340,7 @@ function rewound(ctx) {
         : e.message.startsWith("commit (amend)") ? "amend" : e.message.startsWith("pull") || e.message.startsWith("merge") ? "pull"
         : e.message.startsWith("branch:") ? "branch" : e.message.startsWith("checkout:") ? "checkout" : "move";
       const what = { reset: `a reset (${e.message.replace(/^reset: /, "")})`, rebase: "a rebase", amend: "`commit --amend`", pull: "a pull",
-        branch: "`branch -f`", checkout: "`checkout -B`", move: `"${describe(e.message)}"` }[kind];
+        branch: "`branch -f` or `checkout -B`", checkout: "`checkout -B`", move: `"${describe(e.message)}"` }[kind];
       const name = rescueName(`${branch}-before-${kind}`, e.old);
       const amendOnly = kind === "amend" && lost.length === 1;
       ctx.add({
@@ -396,6 +399,76 @@ function movedAwayOnHead(ctx, st) {
 }
 
 // ---------------------------------------------------------------- what no ref and no reflog reaches
+
+/**
+ * Commits nothing reaches, not even a reflog: the reflog entries expired, or the repository keeps no reflog (a
+ * bare repository on a server does not, so a force push leaves the old commits like this). Stashes are judged by
+ * droppedStashes; commits whose changes are already on HEAD (an old rebase) are left out. One option per line of
+ * history, for the newest three.
+ * @param {Ctx} ctx @param {ReturnType<typeof lostObjects>} objs
+ */
+function unreachableCommits(ctx, objs) {
+  const stashLike = new Set(objs.commits.filter((c) => STASH.test(c.subject)).flatMap((c) => [c.sha, ...c.parents]));
+  const candidates = hideStashParts(objs.commits).filter((c) => !stashLike.has(c.sha) && !ctx.reported.has(c.sha));
+  if (!candidates.length) return;
+  const parents = new Set(candidates.flatMap((c) => c.parents));
+  const head = resolve(ctx.cwd, "HEAD");
+  /** @type {{tip: typeof candidates[number], lost: string[]}[]} */
+  const lines = [];
+  for (const tip of candidates.filter((c) => !parents.has(c.sha))) { // newest first already
+    const lost = lostFrom(ctx, tip.sha, head);
+    if (!lost.length) continue;
+    lost.forEach((c) => ctx.reported.add(c));
+    lines.push({ tip, lost });
+  }
+  if (!lines.length) return;
+  const all = lines.flatMap((l) => l.lost);
+  const recent = lines.some((l) => Date.now() - l.tip.time < 30 * DAY);
+  ctx.add({
+    id: "unreachable-commits",
+    level: recent ? "warning" : "info",
+    title: `${plural(all.length, "commit")} that nothing points to, not even the reflog`,
+    detail: `No branch, tag or reflog entry has ${all.length > 1 ? "them" : "it"}: the reflog entries expired, or this repository keeps no reflog " +
+      "(a bare repository on a server does not, so a force push leaves the old commits like this). ` +
+      `\`git gc\` deletes them once they are about two weeks old:\n${listCommits(ctx.cwd, all)}`,
+    commits: all,
+    options: lines.slice(0, 3).map(({ tip, lost }) => {
+      const name = rescueName("lost", tip.sha);
+      return { title: `Keep "${tip.subject.slice(0, 60)}"${lost.length > 1 ? ` and the ${plural(lost.length - 1, "commit")} before it` : ""} on a new branch "${name}"`, risk: /** @type {const} */ ("safe"), steps: [["branch", name, tip.sha]] };
+    }),
+  });
+}
+
+/**
+ * A stash is three commits: the work ("WIP on main: ..."), the index ("index on main: ...") and, with -u, the
+ * untracked files. Only the first means something to the user; the others are left out when it is listed.
+ * @template {{sha: string, subject: string, parents: string[]}} C
+ * @param {C[]} commits
+ * @returns {C[]}
+ */
+export function hideStashParts(commits) {
+  const parts = new Set(commits.filter((c) => STASH.test(c.subject)).flatMap((c) => c.parents.slice(1)));
+  return commits.filter((c) => !(parts.has(c.sha) && /^(index on|untracked files on) [^:]+:/.test(c.subject)));
+}
+
+/**
+ * `git gc` running now (or stopped in the middle): it deletes the objects nothing points to once they are two
+ * weeks old, which is what git-rescue finds. git treats a gc.pid older than 12 hours as left over.
+ * @param {Repo} repo @param {Finding[]} findings @param {(f: Finding) => void} add
+ */
+function gcRunning(repo, findings, add) {
+  const pid = join(repo.commonDir, "gc.pid");
+  if (!existsSync(pid) || Date.now() - statSync(pid).mtimeMs > 12 * 3600 * 1000) return;
+  const atStake = findings.some((f) => f.commits?.length || f.id === "lost-staged-files");
+  add({
+    id: "gc-running",
+    level: atStake ? "warning" : "info",
+    title: "`git gc` is running, or was stopped in the middle",
+    detail: `It deletes what nothing points to once it is about two weeks old${atStake ? ", which may include what is listed here" : ""}. ` +
+      "Let it finish and run git-rescue again before saving anything. If no git program is running, .git/gc.pid is left over and harmless.",
+    options: [],
+  });
+}
 
 /**
  * Objects nothing reaches, less what other worktrees keep (git 2.19's fsck ignores their HEADs and indexes):
@@ -485,7 +558,7 @@ function stashApplied(cwd, stash, base, files = stashFiles(cwd, stash, base)) {
 
 /** The files a stash changed. @param {string} cwd @param {string} stash @param {string} base */
 function stashFiles(cwd, stash, base) {
-  return git(cwd, ["diff", "--name-only", "-z", base, stash], { allowFail: true }).split("\0").filter(Boolean);
+  return git(cwd, ["diff", "--no-ext-diff", "--no-color", "--name-only", "-z", base, stash], { allowFail: true }).split("\0").filter(Boolean);
 }
 
 /**
