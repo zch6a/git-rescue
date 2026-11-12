@@ -71,7 +71,7 @@ Found while testing, in my own scenario script: it used `init.defaultBranch`, wh
 
 **Docs and project**: README example regenerated from a real run; CHANGELOG.md and CONTRIBUTING.md (never on a real repository, old git, findings are facts); `npm pack` contents checked (11 files, 34 kB; CHANGELOG added). `npm audit` could not reach its endpoint; there are no runtime dependencies.
 
-**Tests**: 44 (+8, `test/round2.test.js`).
+**Tests**: 44 (+8, `test/round2.test.js`). The first CI run failed on macOS only: the line-length test counted the header, which is the repository's path, and macOS temp paths are long (`/private/var/folders/...`); the header is now left out of that check.
 
 **Open**
 - A repository in the middle of `git gc` (objects being packed while fsck reads).
