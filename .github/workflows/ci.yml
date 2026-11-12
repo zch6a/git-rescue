@@ -17,3 +17,30 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run check
+
+  # The oldest git git-rescue supports (2.17, from 2018), built from source: people in trouble are often on an
+  # old machine, and only long-standing commands may be used. The tests need no network (local remotes only).
+  oldest-git:
+    runs-on: ubuntu-latest
+    env:
+      GIT_VERSION: 2.17.0
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 18
+      - id: cache
+        uses: actions/cache@v6
+        with:
+          path: ~/old-git
+          key: git-${{ env.GIT_VERSION }}-${{ runner.os }}-1
+      - if: steps.cache.outputs.cache-hit != 'true'
+        name: Build git ${{ env.GIT_VERSION }}
+        run: |
+          curl -fsSL "https://mirrors.edge.kernel.org/pub/software/scm/git/git-$GIT_VERSION.tar.gz" | tar xz
+          cd "git-$GIT_VERSION"
+          make -j4 prefix="$HOME/old-git" NO_CURL=1 NO_EXPAT=1 NO_GETTEXT=1 NO_TCLTK=1 NO_PERL=1 NO_PYTHON=1 NO_OPENSSL=1 install >/dev/null
+      - run: echo "$HOME/old-git/bin" >> "$GITHUB_PATH"
+      - run: git --version
+      - run: npm ci
+      - run: npm test
