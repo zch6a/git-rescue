@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.0.0 — 2026-11-12
+
+- [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md): what 1.x keeps stable (commands, exit codes per command,
+  `--json` format 1, finding ids and keys, backups, git 2.17+ and Node 18+), and what it does not promise.
+  Tests hold the list of finding ids and the exit codes to it.
+- Backups made by 0.1 (no worktree in the record) are listed and undoable again; the stricter check of the
+  record in 0.4 had left them out.
+- Abandoning an operation with no file in conflict says the uncommitted changes go into the backup's snapshot
+  (they are copied to `.git/rescue-files/` only when in conflict, as before).
+- The code of the findings is split by subject (`src/findings/`); nothing else changed in behaviour.
+- The package includes `docs/`.
+
 ## 0.4.0 — 2026-11-12
 
 A second independent review found 22 problems; all are fixed, each with a test.

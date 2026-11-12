@@ -13,7 +13,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, writeFileSync } from "node:fs";
 import { basename, dirname, resolve as resolvePath } from "node:path";
 
-import { hideStashParts, lostObjects } from "./diagnose.js";
+import { hideStashParts, lostObjects } from "./findings/stashes.js";
 import { KEEP_REFS, commitInfo, git, keepers, objectSizes, objectTime, readObjects, reflog, reflogNames, short, toplevel, unreachableFromRefs } from "./git.js";
 
 /**

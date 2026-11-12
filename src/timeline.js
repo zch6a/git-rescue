@@ -4,7 +4,7 @@
  * forced updates of remote-tracking branches, newest first, each with where things were before it.
  */
 
-import { ago } from "./diagnose.js";
+import { ago } from "./words.js";
 import { reflog, reflogNames, short } from "./git.js";
 
 /**

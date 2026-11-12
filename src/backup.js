@@ -13,7 +13,7 @@
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-import { operationIn, statusEntries } from "./diagnose.js";
+import { operationIn, statusEntries } from "./state.js";
 import { forget, git, refs, resolve, samePath, worktrees } from "./git.js";
 
 /**
@@ -99,7 +99,8 @@ export function backups(repo) {
       // What undo will hand to git comes from this file: a line that does not look exactly as git-rescue writes
       // it (a hand edit, a damaged write) is left out whole, never half used.
       if (o.after && byStamp.has(o.stamp)) { if (validRefs(o.after)) /** @type {Backup} */ (byStamp.get(o.stamp)).after = o.after; }
-      else if (o.label && typeof o.stamp === "string" && /^[\w.-]+$/.test(o.stamp) && typeof o.top === "string" && validRefs(o)
+      // (0.1 records have no `top`: undo then cannot tell the worktree, and does not refuse for it.)
+      else if (o.label && typeof o.stamp === "string" && /^[\w.-]+$/.test(o.stamp) && (o.top === undefined || typeof o.top === "string") && validRefs(o)
         && (o.worktree === null || isSha(o.worktree))) byStamp.set(o.stamp, o);
     } catch {
       // a damaged line: skip it

@@ -68,7 +68,7 @@ Saved the file (38 bytes) to notes.md.
 
 它读取的是仓库的实际状态，而不是根据时间去猜：每一条都是确实存在的情况，并列出涉及的提交。
 
-- **做到一半的操作**：等着解决冲突的 rebase、`am`、merge、cherry-pick、revert（列出是哪些文件），没有结束的 bisect。可以放弃（回到开始之前；放弃会重置文件，所以你已经做的修改会先复制到 `.git/rescue-files/`），或者完成它。
+- **做到一半的操作**：等着解决冲突的 rebase、`am`、merge、cherry-pick、revert（列出是哪些文件），没有结束的 bisect。可以放弃（回到开始之前；放弃会重置文件，所以你已经做的修改会先保存下来，处于冲突状态的会复制到 `.git/rescue-files/`），或者完成它。
 - **残留的 `.git/index.lock`**：它会让 git 拒绝做任何修改。
 - **不在任何分支上的提交**：detached HEAD 上的提交，从 detached HEAD 切走、或在上面 reset 时被丢下的提交，以及你离开某个分支时还在它上面、现在却不在任何分支上的提交。
 - **从分支上掉下来的提交**，不管是什么造成的：`reset`、`branch -f` 或 `checkout -B`、强制 pull、丢掉了提交的 rebase、改了内容的 amend（只作提示）。保留了改动的 rebase、squash、fixup 或 amend 不算丢失：提交按改动内容比较，而不是按 id；改动已经全部在某个分支（本地或远程）上的丢失提交也不报。
@@ -100,7 +100,7 @@ git-rescue --dry-run        # 只显示，不修改；--json 用于脚本；-C �
 
 ## 给脚本用：`--json`
 
-每个命令都支持 `--json`，输出一个对象。`format` 目前是 1：只有删掉字段或改变字段含义时才会加 1；新增字段不改版本号。
+每个命令都支持 `--json`，输出一个对象。`format` 目前是 1：只有删掉字段或改变字段含义时才会加 1；新增字段不改版本号。1.x 保持稳定的全部内容见 [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)（英文）。
 
 退出码：0 没有问题或已完成；1 有需要看的（报告：有 problem 或 warning；`find`：没找到；`fix` 和 `undo`：你选了否，或者下一步要你自己做）；2 无法运行。`lost` 和 `timeline` 只要运行了就返回 0。
 
@@ -109,7 +109,7 @@ git-rescue --dry-run        # 只显示，不修改；--json 用于脚本；-C �
 ```jsonc
 // git-rescue --json
 {
-  "format": 1, "version": "0.4.0",
+  "format": 1, "version": "1.0.0",
   "state": { "branch": "main", "headSha": "…", "unborn": false, "bare": false, "operation": null,
              "conflicted": [], "changed": 0, "untracked": 0, "lockAge": null,
              "superproject": null, "submodules": [] },
@@ -144,7 +144,7 @@ git-rescue --dry-run        # 只显示，不修改；--json 用于脚本；-C �
 
 ## 状态
 
-0.4，开发中（[更新记录](CHANGELOG.md)、[参与贡献](CONTRIBUTING.md)）。测试只用在系统临时文件夹里新建的仓库，绝不碰真实仓库：
+1.0（[更新记录](CHANGELOG.md)、[1.x 保持稳定的内容](docs/COMPATIBILITY.md)、[参与贡献](CONTRIBUTING.md)）。测试只用在系统临时文件夹里新建的仓库，绝不碰真实仓库：
 
 - 每一种问题都会真的制造出来，git-rescue 能执行的每个选项都通过命令执行一遍，然后检查：问题消失了、别处没提交的修改还在、`undo` 把每个分支和 HEAD 都放回原处；
 - 像真人那样使用菜单：选一项、回答是或否、直接回车、提前输入答案、输入中途结束；

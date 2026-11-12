@@ -140,3 +140,22 @@ Held up, per the reviewer: commit, message-only amend, cherry-pick, `merge --no-
 **Open**
 - The containment check looks at the 30 most recently changed branches and remote-tracking branches; a change kept only on an old branch is still reported (a false alarm, never a missed loss).
 - Round 5: read the whole code once more, README line by line against behaviour, and the 1.0 promises (JSON format, exit codes, supported git).
+
+## Round 5 — 2026-11-12 (1.0.0)
+
+**Code.** `src/diagnose.js` had grown to 806 lines holding five unrelated groups of findings. Split by subject, moving line ranges as they were: `state.js` (the state, the shapes findings share), `words.js` (names, lists, counts, times), `findings/operations.js`, `findings/commits.js` (with the containment check), `findings/stashes.js`, `findings/upstream.js`; `diagnose.js` is now the 75-line orchestrator and re-exports what other modules imported from it. The other modules now import from the new homes, which also removes the import cycle timeline → diagnose → timeline. The type check was clean on the first try and all 98 tests passed unchanged. Read through the new containment code once more; one consequence noted: a detached HEAD whose commits were all cherry-picked onto a branch reads as "nothing at risk", which is true.
+
+**README, line by line.** The example output regenerated from the same scenario matches apart from commit ids. One claim was wrong: "abandon it: your edits so far are copied to `.git/rescue-files/` first". They are copied only when files are in conflict (git cannot snapshot them); otherwise they go into the backup's snapshot. The README and the finding's note now say which. The rest held: no network, no telemetry, no push, `restore` never overwrites, `--keep` refuses, untracked files untouched.
+
+**1.0 promises.** `docs/COMPATIBILITY.md` lists what 1.x keeps: commands and options, exit codes per command (a table), `--json` format 1 with every field, the 24 finding ids and the key format, the backup layout and that undo reads older backups, git 2.17+ and Node 18+ on three systems, and what git-rescue never does. And what is not promised: wording, order within a level, exact commands, rescue branch names, the edges of what counts as lost. `test/stable.test.js` holds the code to it:
+- the finding ids the code can produce (including the ones built from templates) must be exactly the ones listed;
+- every exit code in the table;
+- a backup written by 0.1 must still be listed and undoable.
+
+That last test found the one regression of the round: 0.4's check of the backup record required a `top` field, which 0.1 records do not have, so their backups had silently disappeared from `undo --list`. Now `top` may be missing; undo then cannot tell which worktree the fix ran in, and does not refuse for that reason.
+
+**Install.** `npm pack` gives 19 files (bin, src with findings/, docs, README ×2, CHANGELOG, LICENSE, package.json); installed offline from the tarball into a new folder under the temp directory, `git-rescue --version`, the report, a fix and its undo all worked from `node_modules/.bin`.
+
+**Tests**: 101 (+3). CI: Windows, macOS and Linux on Node 18 and 24, and git 2.17.0.
+
+**Done after five rounds.** Rounds 1 and 4 were independent reviews (15 and 22 findings). Each found what my own rounds had not: an "abandon" that destroyed conflict work, undo that wiped later commits, squash rebases reported as losses. Round 3's matrix runs every option of every finding and undoes it. Left for later, in the README's terms: a change kept only on a branch outside the 30 most recently changed is still reported (a false alarm, never a missed loss); submodules are checked one at a time.

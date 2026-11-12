@@ -1,6 +1,6 @@
 {
   "name": "git-rescue",
-  "version": "0.4.0",
+  "version": "1.0.0",
   "description": "What just happened to my git repository, and how do I get my work back? Diagnoses half-done rebases and merges, lost commits, deleted branches, dropped stashes and staged files lost to reset --hard, and backs up before every fix. Local, zero dependencies.",
   "keywords": [
     "git",
@@ -31,6 +31,7 @@
     "README.md",
     "README.zh-CN.md",
     "CHANGELOG.md",
+    "docs",
     "LICENSE"
   ],
   "engines": {

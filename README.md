@@ -74,8 +74,8 @@ It reads the repository's state, not timing guesses: each finding is something t
 commits it concerns.
 
 - **An operation stopped halfway**: a rebase, `am`, merge, cherry-pick or revert waiting on conflicts (which
-  files), a bisect left running. Options: abandon it (back to before; your edits so far are copied to
-  `.git/rescue-files/` first, since an abort resets them), or finish it.
+  files), a bisect left running. Options: abandon it (back to before; an abort resets your files, so your
+  edits so far are saved first, copied to `.git/rescue-files/` when they are in conflict), or finish it.
 - **A stale `.git/index.lock`** that makes git refuse everything.
 - **Commits on no branch**: a detached HEAD with commits, or commits left behind when you switched away from
   one or reset while on it, or that were on a branch when you left it and are on none now.
@@ -124,7 +124,8 @@ It needs Node 18+ and git 2.17 or later (tested with 2.17 and 2.19, from 2018, a
 ## For scripts: `--json`
 
 Every command takes `--json` and prints one object. `format` is 1: it goes up only if a field is removed or
-changes meaning; new fields can appear in a 1.
+changes meaning; new fields can appear in a 1. [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) lists everything
+1.x keeps stable.
 
 Exit status: 0 nothing wrong, or done; 1 something to look at (the report: a problem or a warning; `find`:
 no match; `fix` and `undo`: you said no, or the next step is yours); 2 could not run. `lost` and `timeline`
@@ -137,7 +138,7 @@ instead: `git-rescue fix dropped-by-reset:39f66d49/a --yes` applies option a of 
 ```jsonc
 // git-rescue --json
 {
-  "format": 1, "version": "0.4.0",
+  "format": 1, "version": "1.0.0",
   "state": { "branch": "main", "headSha": "…", "unborn": false, "bare": false, "operation": null,
              "conflicted": [], "changed": 0, "untracked": 0, "lockAge": null,
              "superproject": null, "submodules": [] },
@@ -187,8 +188,8 @@ matches}`, `undo --list --json` `{format, version, backups}`.
 
 ## Status
 
-0.4, in development ([changes](CHANGELOG.md), [contributing](CONTRIBUTING.md)). Tested only with throwaway
-repositories made in the system's temp folder, never a real one:
+1.0 ([changes](CHANGELOG.md), [what 1.x keeps stable](docs/COMPATIBILITY.md), [contributing](CONTRIBUTING.md)).
+Tested only with throwaway repositories made in the system's temp folder, never a real one:
 
 - every kind of finding is staged for real, every option git-rescue runs is applied through the command, and
   then checked: the finding is gone, an uncommitted edit elsewhere survived, and `undo` puts every branch and
