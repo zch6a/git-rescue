@@ -20,7 +20,8 @@ test("the report names the commits that fell off and the files a dropped stash c
   assert.match(out, /2 commits fell off main/);
   assert.match(out, /\n {7}[0-9a-f]{8} {2}parser handles quotes\n {7}[0-9a-f]{8} {2}add the parser\n/);
   assert.match(out, /It changed README\.md\./);
-  for (const line of out.split("\n")) if (!/^ {10}git /.test(line)) assert.ok(line.length <= 100, `wrapped: ${line}`);
+  // Every line but the header (the repository's path, as long as it is) and the commands fits in 100 columns.
+  for (const line of out.split("\n").slice(1)) if (!/^ {10}git /.test(line)) assert.ok(line.length <= 100, `wrapped: ${line}`);
 });
 
 test("lost files are previewed in the report; lost does not list a stash's inner commits", () => {
