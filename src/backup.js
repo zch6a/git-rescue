@@ -10,16 +10,16 @@
  * .git/rescue-files/<time>/. Untracked files are not saved; git-rescue's fixes never touch them.
  */
 
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-import { statusEntries } from "./diagnose.js";
+import { operationIn, statusEntries } from "./diagnose.js";
 import { forget, git, refs, resolve, samePath, worktrees } from "./git.js";
 
 /**
  * @typedef {{head: string, branches: Record<string, string>}} RefState
  * @typedef {{stamp: string, label: string, top: string, head: string, branch: string | null, branches: Record<string, string>,
- *   worktree: string | null, files: string | null, after?: RefState}} Backup
+ *   worktree: string | null, files: string | null, operation?: string | null, notCopied?: string[], after?: RefState}} Backup
  */
 
 /** Where HEAD and every branch are now. @param {string} cwd @returns {RefState} */
@@ -39,7 +39,11 @@ export function refState(cwd) {
  * @returns {Backup}
  */
 export function backup(cwd, repo, label) {
-  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z").replace("T", "-");
+  // To the millisecond, and never one already used: two backups in the same second would share their refs and
+  // their record, and the first would be lost.
+  const used = new Set(backups(repo).map((x) => x.stamp));
+  let stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-");
+  for (let n = 2; used.has(stamp); n++) stamp = `${stamp.replace(/-\d+$/, "")}-${n}`;
   const base = `refs/rescue/${stamp}`;
   const now = refState(cwd);
   const headSha = resolve(cwd, "HEAD");
@@ -51,19 +55,28 @@ export function backup(cwd, repo, label) {
   const worktree = /^[0-9a-f]{40}$/.test(made) ? made : null;
   if (worktree) git(cwd, ["update-ref", `${base}/worktree`, worktree]);
   let files = null;
+  /** @type {string[]} */
+  const notCopied = [];
   if (!worktree) {
-    const changed = statusEntries(cwd).filter((e) => e.xy !== "??" && existsSync(join(repo.top, e.path)));
+    // Files only: a submodule with changes shows as a changed path too, but it is a folder (and a repository of
+    // its own, which no fix here touches).
+    const changed = statusEntries(cwd).filter((e) => e.xy !== "??" && existsSync(join(repo.top, e.path)) && statSync(join(repo.top, e.path)).isFile());
     if (changed.length) {
       files = join(repo.commonDir, "rescue-files", stamp);
       for (const e of changed) {
         const to = join(files, e.path);
-        mkdirSync(dirname(to), { recursive: true });
-        copyFileSync(join(repo.top, e.path), to);
+        try {
+          mkdirSync(dirname(to), { recursive: true });
+          copyFileSync(join(repo.top, e.path), to);
+        } catch {
+          notCopied.push(e.path);
+        }
       }
     }
   }
   /** @type {Backup} */
-  const b = { stamp, label, top: repo.top, head: now.head, branch: now.head.startsWith("refs/heads/") ? now.head.slice(11) : null, branches: now.branches, worktree, files };
+  const b = { stamp, label, top: repo.top, head: now.head, branch: now.head.startsWith("refs/heads/") ? now.head.slice(11) : null, branches: now.branches,
+    worktree, files, operation: operationIn(repo.gitDir), ...(notCopied.length ? { notCopied } : {}) };
   appendFileSync(join(repo.commonDir, "rescue.log"), JSON.stringify(b) + "\n");
   return b;
 }
@@ -83,13 +96,27 @@ export function backups(repo) {
     if (!l) continue;
     try {
       const o = JSON.parse(l);
-      if (o.after && byStamp.has(o.stamp)) /** @type {Backup} */ (byStamp.get(o.stamp)).after = o.after;
-      else if (o.label) byStamp.set(o.stamp, o);
+      // What undo will hand to git comes from this file: a line that does not look exactly as git-rescue writes
+      // it (a hand edit, a damaged write) is left out whole, never half used.
+      if (o.after && byStamp.has(o.stamp)) { if (validRefs(o.after)) /** @type {Backup} */ (byStamp.get(o.stamp)).after = o.after; }
+      else if (o.label && typeof o.stamp === "string" && /^[\w.-]+$/.test(o.stamp) && typeof o.top === "string" && validRefs(o)
+        && (o.worktree === null || isSha(o.worktree))) byStamp.set(o.stamp, o);
     } catch {
       // a damaged line: skip it
     }
   }
   return [...byStamp.values()].reverse();
+}
+
+/** @param {unknown} s */
+const isSha = (s) => typeof s === "string" && /^[0-9a-f]{40}$/.test(s);
+/** A branch name git-rescue could have written: no option-like start, nothing git forbids. @param {string} n */
+const isBranchName = (n) => /^[^-\s~^:?*[\\][^\s~^:?*[\\]*$/.test(n) && !n.includes("..") && !n.endsWith(".lock") && !n.endsWith("/");
+/** @param {{head?: unknown, branches?: unknown}} o */
+function validRefs(o) {
+  if (typeof o.head !== "string" || !(o.head === "" || isSha(o.head) || (o.head.startsWith("refs/heads/") && isBranchName(o.head.slice(11))))) return false;
+  if (!o.branches || typeof o.branches !== "object") return false;
+  return Object.entries(o.branches).every(([name, sha]) => isBranchName(name) && isSha(sha));
 }
 
 /**
@@ -110,7 +137,11 @@ export function undoSteps(cwd, b) {
   const steps = [];
   // HEAD first: the branch ops below then act on the branch that will be checked out.
   let current = now.head.startsWith("refs/heads/") ? now.head.slice(11) : null;
-  if (after.head !== b.head) {
+  if (after.head !== b.head && b.operation) {
+    // The fix abandoned an operation: HEAD was on a commit from the middle of it, and putting HEAD back there
+    // would not bring the operation back, only leave HEAD detached on that commit.
+    skipped.push(`HEAD (the ${b.operation} that was abandoned cannot be resumed${b.files ? `; your edits from it are in ${b.files}` : ""})`);
+  } else if (after.head !== b.head) {
     if (now.head !== after.head) skipped.push(`HEAD (moved since the fix)`);
     else if (b.branch) {
       steps.push(b.branches[b.branch] && !now.branches[b.branch] ? ["checkout", "-b", b.branch, b.branches[b.branch]] : ["checkout", b.branch]);

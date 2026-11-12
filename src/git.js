@@ -8,7 +8,8 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 export class GitError extends Error {
@@ -36,13 +37,13 @@ const env = () => ({
  * Runs git in `cwd`. Returns stdout; throws GitError when git fails, unless `allowFail`.
  * @param {string} cwd
  * @param {string[]} args
- * @param {{allowFail?: boolean, input?: string | Buffer, maxBuffer?: number, raw?: boolean}} [opts]
+ * @param {{allowFail?: boolean, input?: string | Buffer, maxBuffer?: number, raw?: boolean, env?: Record<string, string>}} [opts]
  * @returns {string}
  */
 export function git(cwd, args, opts = {}) {
   const r = spawnSync("git", args, {
     cwd,
-    env: env(),
+    env: { ...env(), ...opts.env },
     input: opts.input,
     maxBuffer: opts.maxBuffer ?? 256 * 1024 * 1024,
     encoding: opts.raw ? null : "utf8", // null: bytes, for object contents
@@ -83,11 +84,33 @@ export function gitRun(cwd, args) {
   return { code: r.status ?? 1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 }
 
-/** Whether a read-only git command succeeds (`merge-base --is-ancestor`, `cat-file -e`). @param {string} cwd @param {string[]} args */
-export function gitOk(cwd, args) {
-  const r = spawnSync("git", args, { cwd, env: env(), stdio: "ignore", windowsHide: true });
+/**
+ * Whether a read-only git command succeeds (`merge-base --is-ancestor`, `cat-file -e`, `apply --check`).
+ * @param {string} cwd @param {string[]} args @param {{input?: string | Buffer, env?: Record<string, string>}} [opts]
+ */
+export function gitOk(cwd, args, opts = {}) {
+  const r = spawnSync("git", args, { cwd, env: { ...env(), ...opts.env }, input: opts.input, stdio: [opts.input === undefined ? "ignore" : "pipe", "ignore", "ignore"], windowsHide: true, maxBuffer: 1 << 30 });
   return r.status === 0;
 }
+
+/**
+ * An index file outside the repository holding `tree`'s files, for `git apply --cached --check` against a commit
+ * without touching the repository's own index. Made once per commit for the command, deleted at exit.
+ * @param {string} cwd @param {string} commit
+ * @returns {string | null}
+ */
+export function scratchIndex(cwd, commit) {
+  return remember(`index ${cwd} ${commit}`, () => {
+    const file = join(tmpdir(), `git-rescue-index-${process.pid}-${scratchFiles.length}`);
+    scratchFiles.push(file);
+    return gitOk(cwd, ["read-tree", commit], { env: { GIT_INDEX_FILE: file } }) ? file : null;
+  });
+}
+/** @type {string[]} */
+const scratchFiles = [];
+process.on("exit", () => {
+  for (const f of scratchFiles) for (const g of [f, `${f}.lock`]) try { unlinkSync(g); } catch { /* not made */ }
+});
 
 /** The working tree's top folder as git spells it ("" in a bare repository). @param {string} cwd */
 export function toplevel(cwd) {
@@ -284,10 +307,12 @@ export function commitInfo(cwd, shas) {
 export function unreachableObjects(cwd) {
   // --connectivity-only: the same list, without checking every object's contents (11 times faster on a big repo).
   const out = git(cwd, ["fsck", "--unreachable", "--connectivity-only", "--no-progress"], { allowFail: true });
+  /** @type {{type: string, sha: string}[]} */
   const found = [];
   for (const line of out.split("\n")) {
-    const m = line.match(/^unreachable (commit|blob|tree|tag) ([0-9a-f]{40})/);
-    if (m) found.push({ type: m[1], sha: m[2] });
+    // "dangling" too: in a repository with no commits yet, fsck says that even with --unreachable.
+    const m = line.match(/^(?:unreachable|dangling) (commit|blob|tree|tag) ([0-9a-f]{40})/);
+    if (m && !found.some((f) => f.sha === m[2])) found.push({ type: m[1], sha: m[2] });
   }
   return found;
 }

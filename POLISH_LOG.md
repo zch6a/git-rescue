@@ -101,3 +101,42 @@ Mistakes of mine on the way, in tests only: a scenario cloned a bare repository 
 **Open**
 - `am` with a patch that does not apply at all (no conflict, just "patch does not apply").
 - A second independent review, in round 4 or 5.
+
+## Round 4 — 2026-11-12 (0.4.0)
+
+**A second independent review.** A reviewer given only the README and the code (not my notes or earlier findings) tried to break it for 13 minutes, only in throwaway repositories, and reproduced 21 of 22 findings. `test/review2.test.js` has one test per finding (plus the `am` case below); 22 of the 23 fail on 0.3.0, and the one that passed did so by luck (two backups happened to fall in different seconds).
+
+**The big one: false alarms in ordinary work, from one cause.** Lost commits were compared one patch at a time (`git cherry`) and only against HEAD. So a squash or fixup rebase (no single patch matches the squashed one), a rebase followed by switching to another branch (compared against the wrong branch), a squash merge, a pull request squash-merged on the server and then pruned, and an old rebase of another branch after its reflog expired were all "lost commits", some as problems. Now, after the cheap comparison, lost commits are judged as a whole: their combined change, from just before the first to the last, must fail to come back out (`git apply --cached --check -R`, in an index file outside the repository) of every recent branch, remote-tracking branch and HEAD. Two more rules came out of making those tests pass:
+- A reflog move that only went forward (a commit, a fast-forward) drops nothing, so it is not judged; if its new position is lost, a later move says so. (Without this, the entry for "commit: squash! B" was blamed for dropping its own parent.)
+- The steps inside a rebase (pick, squash, fixup, finish) are not judged one by one: a squash folds in the pick before it, a fixup rewrites the original. A rebase is judged whole, from its start entry to where the branch ended.
+- And in the middle of an operation, what it has made so far is on HEAD: work in progress, not lost.
+
+The first version of the new check counted HEAD as a place where changes are kept, so commits on a detached HEAD were "kept on HEAD" and no longer reported; the existing tests caught it at once. HEAD is skipped when it has the very commits being judged.
+
+**Real losses that were not reported**
+- A dropped `stash -u` holding only new files: only tracked files were compared, so "nothing to compare" counted as applied. Now the untracked files (the stash's third parent) are compared too.
+- Files staged in a repository with no commits yet: in that case `fsck --unreachable` prints "dangling", and only "unreachable" lines were read.
+- An upstream force-pushed twice: only the newest forced update was looked at, whose "old" is the first rewrite, which the branch never had. Now every forced update of the last 30 days, until one matches.
+
+**Fixes and undo**
+- `fix 2b --yes` after `fix 1a` applied a different fix: numbers shift after each fix. Findings now have a `key` (kind and first commit) in `--json`; `fix KEY/a` finds the same finding or refuses. After a fix, git-rescue says the numbers may have changed.
+- A submodule with changes during a conflict crashed the backup (it tried to copy a folder), so a merge could not be abandoned. Only files are copied now, and a file that cannot be copied is named, not fatal.
+- Backup stamps had one-second resolution: two backups in one second shared refs and record, and the first was lost. Now to the millisecond and never reused.
+- A hand-edited `rescue.log` value reached git: a branch value of `-D` made undo run `git branch -f keepme -D`, deleting the branch. Now a record line that is not exactly as git-rescue writes it (ids, branch names, stamp) is ignored whole; dropping only the bad field would have made undo think the fix had created the branch, and delete it.
+- Undo after abandoning a rebase moved HEAD to a commit from the middle of it. The operation cannot come back; undo now leaves HEAD and says why.
+- `undo STAMP` undoes an earlier fix; undo twice redoes, now said in `--help` and the README.
+- A branch checked out in another worktree was offered "put it back" with a `checkout` that always fails. Now the option is left out and the note says to reset it in that worktree.
+
+**Smaller**: a deleted-then-recreated branch was described as a detached HEAD (now "commits that were on exp when you left it are on no branch now"); a stray `" +` in the no-reflog finding's text (my own template mix-up from round 3); the backup message blamed conflicts when a locked index was the cause; an option that starts with you exited 0 (now 1), and exit codes are documented per command; run from a subfolder, the report says the commands are for the top folder, and fixes run there.
+
+**Also this round**
+- `git am` with a patch that does not apply at all stops with no file in conflict, and "finish it: resolve the conflicts" ran `am --continue`, which says "No changes". Now: apply it by hand (`git apply --reject .git/rebase-apply/patch`), add, continue; and "leave this patch out" rather than "commit".
+- CI runs the tests on git 2.17.0 too, built from source in a cached step: the oldest version the README promises. The first build failed: today's compilers default to C23, where `thread_local`, a name git 2.17 uses, is a keyword; built with `-std=gnu99`. All 75 tests passed there on the first run.
+
+Held up, per the reviewer: commit, message-only amend, cherry-pick, `merge --no-ff`, merged branch deletion, `stash pop`, `stash apply`+drop, tags, notes, worktree commits, `gc` and `gc --prune=now` gave no false alarm; `reset --keep` refused to overwrite an untracked file; uncommitted edits survived fixes and undos; the menu's typed-ahead and end-of-input handling; command-line errors.
+
+**Tests**: 98 (+23). Report on the 30,000-commit repository: 2.9 s in-process (the new check only runs when something is lost).
+
+**Open**
+- The containment check looks at the 30 most recently changed branches and remote-tracking branches; a change kept only on an old branch is still reported (a false alarm, never a missed loss).
+- Round 5: read the whole code once more, README line by line against behaviour, and the 1.0 promises (JSON format, exit codes, supported git).

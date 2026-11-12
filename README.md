@@ -78,13 +78,16 @@ commits it concerns.
   `.git/rescue-files/` first, since an abort resets them), or finish it.
 - **A stale `.git/index.lock`** that makes git refuse everything.
 - **Commits on no branch**: a detached HEAD with commits, or commits left behind when you switched away from
-  one or reset while on it.
+  one or reset while on it, or that were on a branch when you left it and are on none now.
 - **Commits that fell off a branch**, whatever moved it: a `reset`, a `branch -f` or `checkout -B`, a forced
-  pull, a rebase that dropped a commit, an amend that changed the content (as information). A rebase or
-  an amend that kept the changes is not a loss: commits are compared by their changes, not their ids.
-- **A deleted branch** whose commits no other branch has (merged branches are not reported).
-- **A dropped stash** (`stash drop`, `stash clear`) whose changes are not in your files or commits: back onto
-  the stash list. (A `stash pop` drops the stash too, after applying it: that is not reported.)
+  pull, a rebase that dropped a commit, an amend that changed the content (as information). A rebase,
+  squash, fixup or amend that kept the changes is not a loss: commits are compared by their changes, not
+  their ids, and lost commits whose changes are all in a branch (local or remote) are left out.
+- **A deleted branch** whose commits no other branch has (merged branches, squash merges included, are not
+  reported).
+- **A dropped stash** (`stash drop`, `stash clear`; with `stash -u`, its new files too) whose changes are not
+  in your files or commits: back onto the stash list. (A `stash pop` drops the stash too, after applying it:
+  that is not reported.)
 - **Files you staged and never committed**, lost to `reset --hard` or `checkout .`: the reflog cannot see
   these; git still has their contents until `git gc` prunes them (about two weeks). Shown as information,
   since adding a file, editing it and adding it again leaves the first version behind too.
@@ -108,29 +111,39 @@ git-rescue timeline         # what happened recently, in words, with where thing
 git-rescue lost             # everything git can still give back
 git-rescue find "some text" # search lost work: staged files, the files of lost commits, their messages
 git-rescue restore ID FILE  # save a lost file (or a lost commit's diff) to a new file; never overwrites
-git-rescue undo             # undo what git-rescue last did
-git-rescue fix 1a --yes     # apply option a of problem 1 without the menu (for scripts)
+git-rescue undo             # undo what git-rescue last did (undo again redoes it)
+git-rescue undo STAMP       # undo an earlier fix (git-rescue undo --list shows them)
+git-rescue fix 1a --yes     # apply option a of problem 1 without the menu
+git-rescue fix KEY/a --yes  # the same by the finding's key from --json: for scripts, see below
 git-rescue --dry-run        # show, change nothing;  --json for scripts;  -C path for another folder
 ```
 
 Install the command with `npm install -g github:zch6a/git-rescue`, or run it once with `npx` as above.
-It needs Node 18+ and git (tested with git 2.19, from 2018, and the current one).
+It needs Node 18+ and git 2.17 or later (tested with 2.17 and 2.19, from 2018, and the current one).
 
 ## For scripts: `--json`
 
 Every command takes `--json` and prints one object. `format` is 1: it goes up only if a field is removed or
-changes meaning; new fields can appear in a 1. Exit status: 0 nothing wrong (or done), 1 something to look at
-(or nothing found), 2 could not run.
+changes meaning; new fields can appear in a 1.
+
+Exit status: 0 nothing wrong, or done; 1 something to look at (the report: a problem or a warning; `find`:
+no match; `fix` and `undo`: you said no, or the next step is yours); 2 could not run. `lost` and `timeline`
+exit 0 when they ran.
+
+Numbers change after each fix (fixing 1 makes 2 the new 1). A script should pick a finding by its `key`
+instead: `git-rescue fix dropped-by-reset:39f66d49/a --yes` applies option a of that finding, or refuses
+(exit 2) if it is no longer there.
 
 ```jsonc
 // git-rescue --json
 {
-  "format": 1, "version": "0.3.0",
+  "format": 1, "version": "0.4.0",
   "state": { "branch": "main", "headSha": "…", "unborn": false, "bare": false, "operation": null,
              "conflicted": [], "changed": 0, "untracked": 0, "lockAge": null,
              "superproject": null, "submodules": [] },
   "findings": [{
     "id": "dropped-by-reset",            // what kind of finding; the ids are listed in src/diagnose.js
+    "key": "dropped-by-reset:39f66d49",  // this finding: the kind and its first commit, for fix KEY/a
     "level": "warning",                   // "problem", "warning" or "info"
     "title": "2 commits fell off main with a reset (moving to HEAD~2) just now",
     "detail": "…",
@@ -144,7 +157,7 @@ changes meaning; new fields can appear in a 1. Exit status: 0 nothing wrong (or 
 A step is git's arguments; a step of one string with spaces in it is something the user does, and
 `[":remove-index-lock"]` is done by git-rescue. `timeline --json` prints `{format, version, events}`,
 `lost --json` `{format, version, reflogOnly, unreachable, staged}`, `find --json` `{format, version, text,
-matches}`.
+matches}`, `undo --list --json` `{format, version, backups}`.
 
 ## Safe to run
 
@@ -155,7 +168,9 @@ matches}`.
   can read; while files are in conflict, when git cannot make that snapshot, it copies the changed files
   to `.git/rescue-files/<time>/` instead. `git-rescue undo` puts back what the fix changed (a branch it moved,
   made or deleted, and HEAD), leaves alone anything that moved since, and offers your saved changes
-  again. Untracked files are not saved; no fix touches them.
+  again. After abandoning a rebase or merge, undo leaves HEAD where it is: the operation cannot be resumed,
+  and your edits from it are in `.git/rescue-files/`. Untracked files are not saved; no fix touches them.
+  The backup record is checked before undo uses it: a line that is not as git-rescue wrote it is ignored.
 - **Options are rated**: *safe* (nothing that a plain git command cannot undo), *careful* (moves a branch
   or your files; backed up first), *you do it* (resolving a conflict).
 - `restore` writes only to a new file name.
@@ -172,7 +187,7 @@ matches}`.
 
 ## Status
 
-0.3, in development ([changes](CHANGELOG.md), [contributing](CONTRIBUTING.md)). Tested only with throwaway
+0.4, in development ([changes](CHANGELOG.md), [contributing](CONTRIBUTING.md)). Tested only with throwaway
 repositories made in the system's temp folder, never a real one:
 
 - every kind of finding is staged for real, every option git-rescue runs is applied through the command, and
@@ -183,10 +198,12 @@ repositories made in the system's temp folder, never a real one:
   submodules, worktrees, branch names with `/`, `#` and Chinese characters, a path with spaces, git config that
   changes git's output (`color.ui=always`, `format.pretty`, `diff.external`), and a repository with 30,000
   commits and 3,000 lost file versions (the report takes about 3 s on Windows);
-- what an independent review found (routine rebases and `stash pop`s that are not losses, 900 reflog
-  entries, non-ASCII file names, line endings).
+- what two independent reviews found (routine, squash and fixup rebases, `stash pop`s and squash merges that
+  are not losses, a dropped `stash -u`, files staged before the first commit, 900 reflog entries, non-ASCII
+  file names, line endings).
 
-On git 2.19 here, and on the git of GitHub's Windows, macOS and Linux runners in CI.
+On git 2.19 here, and in CI on git 2.17.0 (built from source) and the git of GitHub's Windows, macOS and Linux
+runners.
 
 ## Develop
 

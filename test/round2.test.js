@@ -90,7 +90,7 @@ test("--json has a format number and the same fields for every command", () => {
   assert.equal(report.format, 1);
   assert.deepEqual(Object.keys(report), ["format", "version", "state", "findings"]);
   const f = report.findings[0];
-  assert.deepEqual(Object.keys(f).sort(), ["commits", "detail", "id", "level", "options", "title"]);
+  assert.deepEqual(Object.keys(f).sort(), ["commits", "detail", "id", "key", "level", "options", "title"]);
   assert.deepEqual(Object.keys(f.options[0]).sort(), ["risk", "steps", "title"]);
   assert.ok(Array.isArray(f.options[0].steps[0]));
   for (const k of ["branch", "headSha", "unborn", "bare", "operation", "conflicted", "changed", "untracked", "lockAge", "superproject", "submodules"]) assert.ok(k in report.state, k);

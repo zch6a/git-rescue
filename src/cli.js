@@ -16,11 +16,11 @@ import { createInterface } from "node:readline";
 
 import { backup, backups, recordAfter, undoSteps } from "./backup.js";
 import { REMOVE_LOCK, ago, diagnose, isInstruction } from "./diagnose.js";
-import { GitError, gitRun, repoAt, short, version } from "./git.js";
+import { GitError, git, gitRun, repoAt, short, version } from "./git.js";
 import { find, inventory, restore } from "./lost.js";
 import { line, timeline } from "./timeline.js";
 
-const VERSION = "0.3.0";
+const VERSION = "0.4.0";
 /** The shape of --json output; it goes up only when a field is removed or changes meaning (see README). */
 const JSON_FORMAT = 1;
 const HELP = `git-rescue ${VERSION}: what just happened to my repository, and how do I get my work back?
@@ -31,15 +31,17 @@ const HELP = `git-rescue ${VERSION}: what just happened to my repository, and ho
                               stashes, files you staged and never committed
   git-rescue find TEXT [-i]   search lost work for TEXT (-i: ignore case)
   git-rescue restore ID FILE  save a lost file (or a lost commit's diff) to a new FILE
-  git-rescue undo [--list]    undo what git-rescue last did (or list its backups)
+  git-rescue undo [--list]    undo what git-rescue last did (or list its backups); undo again redoes it
+  git-rescue undo STAMP       undo an earlier fix, by the stamp undo --list shows
 
   git-rescue fix N[a]         apply option a of problem N without the menu (with --yes: without asking)
+  git-rescue fix KEY[/a]      the same by the finding's key from --json, which does not change after a fix
 
 Options: -C PATH (the repository; default: here), --dry-run (show, change nothing), --json (for
 scripts; the format is described in the README), --yes (do not ask), -h, --version.
 
-Exit status: 0 nothing wrong or done, 1 something to look at (or nothing found, or you said no),
-2 could not run.
+Exit status: 0 nothing wrong, or done; 1 something to look at (report: a problem or a warning; find: no
+match; fix: you said no, or it is your turn); 2 could not run. lost and timeline exit 0 when they ran.
 
 It changes nothing without asking. Before any change it saves every branch, HEAD and your uncommitted
 changes under refs/rescue/, so that \`git-rescue undo\` can put them back.`;
@@ -191,7 +193,7 @@ export async function main(argv) {
       say(`Saved ${r.type === "blob" ? "the file" : "the commit and its diff"} (${r.bytes} bytes) to ${file}.`);
       return 0;
     }
-    if (cmd === "undo") return await undoCommand(cwd, repo, { list, dry, yes });
+    if (cmd === "undo") return await undoCommand(cwd, repo, { list, dry, yes, json, stamp: rest[0] ?? null });
     if (cmd === "fix") return await fixCommand(cwd, repo, rest[0] ?? "", { dry, yes });
     if (cmd) return err(`unknown command "${cmd}" (see git-rescue --help)`), 2;
     return await checkCommand(cwd, repo, { json, dry });
@@ -216,6 +218,8 @@ async function checkCommand(cwd, repo, o) {
       ? `(${first} is a submodule, a repository of its own: git-rescue -C ${first} checks it)`
       : `(${state.submodules.length} submodules, each a repository of its own, such as ${state.submodules.slice(0, 3).join(", ")}: git-rescue -C ${first} checks one)`));
   }
+  const prefix = state.bare ? "" : git(cwd, ["rev-parse", "--show-prefix"], { allowFail: true }).trim();
+  if (prefix && findings.some((f) => f.options.length)) say(c("2", `(you are in ${prefix}: run the commands from the top folder, ${repo.top})`));
   say("");
   if (!findings.length) {
     say("Nothing looks wrong. (`git-rescue timeline` shows what happened; `git-rescue lost` what git can still give back.)");
@@ -248,7 +252,7 @@ async function checkCommand(cwd, repo, o) {
 
 /** @param {string} cwd @param {{top: string, gitDir: string, commonDir: string}} repo @param {string} pick @param {{dry: boolean, yes: boolean}} o */
 async function fixCommand(cwd, repo, pick, o) {
-  if (!pick) return err("fix what? git-rescue fix N[a] (the numbers git-rescue shows)"), 2;
+  if (!pick) return err("fix what? git-rescue fix N[a] (the numbers git-rescue shows), or fix KEY[/a] (the key from --json)"), 2;
   const { findings } = diagnose(cwd, repo);
   if (o.yes || o.dry || !process.stdin.isTTY) return apply(cwd, repo, findings, pick, { ...o, rl: null });
   const rl = asker();
@@ -268,18 +272,27 @@ async function fixCommand(cwd, repo, pick, o) {
  * @param {{dry: boolean, yes: boolean, rl: Asker | null}} o
  */
 async function apply(cwd, repo, findings, pick, o) {
-  const m = pick.match(/^(\d+)([a-z]?)$/i);
-  const f = m ? findings[Number(m[1]) - 1] : undefined;
-  if (!m || !f) return err(`"${pick}" is not one of the problems listed (1 to ${findings.length})`), 2;
-  const opt = f.options[m[2] ? m[2].toLowerCase().charCodeAt(0) - 97 : 0];
-  if (!opt) return err(`problem ${m[1]} has options a to ${String.fromCharCode(96 + f.options.length)}`), 2;
+  // By number (as shown; numbers change after each fix) or by key (from --json; it names the same finding or none).
+  const byNumber = pick.match(/^(\d+)([a-z]?)$/i);
+  const byKey = byNumber ? null : pick.match(/^([a-z][a-z-]*(?::[0-9a-f]{8})?(?:-\d+)?)(?:\/([a-z]))?$/i);
+  let f;
+  if (byNumber) {
+    f = findings[Number(byNumber[1]) - 1];
+    if (!f) return err(`"${pick}" is not one of the problems listed (1 to ${findings.length})`), 2;
+  } else if (byKey) {
+    f = findings.find((x) => x.key === byKey[1]);
+    if (!f) return err(`${byKey[1]} is no longer there: it may have been fixed, or the repository changed. Run git-rescue again.`), 2;
+  } else return err(`"${pick}" is neither a number like 1a nor a key from --json like dropped-by-reset:1a2b3c4d/a`), 2;
+  const letter = (byNumber ?? byKey)?.[2];
+  const opt = f.options[letter ? letter.toLowerCase().charCodeAt(0) - 97 : 0];
+  if (!opt) return err(f.options.length ? `that problem has options a to ${String.fromCharCode(96 + f.options.length)}` : "that one has nothing to run"), 2;
   say(`\n${f.title}\n→ ${opt.title}\n`);
   for (const s of opt.steps) say(`   ${shown(s)}`);
   if (o.dry) return say("\n(dry run: nothing changed)"), 0;
   if (isInstruction(opt.steps[0])) {
     // It starts with something only you can do: nothing to run or back up yet.
     say(`\nThis one starts with you: ${opt.steps[0][0]}. Then run the commands after it yourself.`);
-    return 0;
+    return 1;
   }
   if (!o.yes) {
     if (!o.rl) return err("not run: add --yes to apply without being asked, or run it in a terminal"), 2;
@@ -288,28 +301,38 @@ async function apply(cwd, repo, findings, pick, o) {
   }
   const b = backup(cwd, repo, opt.title);
   say(c("2", `   (backup: refs/rescue/${b.stamp}; \`git-rescue undo\` puts back what this changes)`));
-  if (b.files) say(c("33", `   (git cannot snapshot files in conflict: your changed files are copied as they are to ${b.files})`));
+  if (b.files) {
+    const why = existsSync(join(repo.gitDir, "index.lock")) ? "git cannot snapshot your changes while .git/index.lock is there" : "git cannot snapshot files in conflict";
+    say(c("33", `   (${why}: your changed files are copied as they are to ${b.files})`));
+  }
+  if (b.notCopied) say(c("33", `   (not copied: ${b.notCopied.join(", ")})`));
   try {
-    return runSteps(cwd, repo, opt.steps);
+    const code = runSteps(cwd, repo, opt.steps);
+    if (code === 0 && findings.length > 1) say(c("2", "The numbers of the other problems may have changed: run git-rescue again before the next fix."));
+    return code;
   } finally {
     recordAfter(cwd, repo, b.stamp);
   }
 }
 
-/** @param {string} cwd @param {{gitDir: string}} repo @param {string[][]} steps */
+/**
+ * Runs the steps from the top folder (paths in them are relative to it), stopping at the first that fails.
+ * @param {string} cwd @param {{gitDir: string, top: string, bare?: boolean}} repo @param {string[][]} steps
+ */
 function runSteps(cwd, repo, steps) {
+  const at = repo.bare || !repo.top ? cwd : repo.top;
   for (const s of steps) {
     if (isInstruction(s)) {
       say(`\nNow it is your turn: ${s[0]}. Then run the remaining steps:`);
       for (const r of steps.slice(steps.indexOf(s) + 1)) say(`   ${shown(r)}`);
-      return 0;
+      return 1;
     }
     if (s[0] === REMOVE_LOCK) {
       unlinkSync(join(repo.gitDir, "index.lock"));
       say(`   ✓ ${shown(s)}`);
       continue;
     }
-    const r = gitRun(cwd, s);
+    const r = gitRun(at, s);
     if (r.code !== 0) {
       say(`   ✗ ${shown(s)}\n${(r.stderr || r.stdout).trim().replace(/^/gm, "     ")}`);
       say(`\nStopped there. Nothing after it was run; \`git-rescue undo\` puts things back as they were.`);
@@ -347,15 +370,22 @@ function lostCommand(cwd, repo, json) {
   return 0;
 }
 
-/** @param {string} cwd @param {{top: string, gitDir: string, commonDir: string}} repo @param {{list: boolean, dry: boolean, yes: boolean}} o */
+/**
+ * Undoes the last fix (an undo is a fix too: undo twice redoes), or the one with this stamp.
+ * @param {string} cwd @param {{top: string, gitDir: string, commonDir: string}} repo
+ * @param {{list: boolean, dry: boolean, yes: boolean, json: boolean, stamp: string | null}} o
+ */
 async function undoCommand(cwd, repo, o) {
   const all = backups(repo);
   if (o.list) {
+    if (o.json) return say(JSON.stringify({ format: JSON_FORMAT, version: VERSION, backups: all }, null, 2)), 0;
     if (!all.length) return say("git-rescue has made no backups here."), 0;
     for (const b of all) say(`  ${b.stamp}  before: ${b.label}${b.worktree ? " (with uncommitted changes)" : ""}`);
+    say(c("2", "git-rescue undo STAMP undoes one of them; the newest is what undo alone undoes."));
     return 0;
   }
-  const b = all[0];
+  const b = o.stamp ? all.find((x) => x.stamp === o.stamp) : all[0];
+  if (o.stamp && !b) return err(`no backup ${o.stamp} (git-rescue undo --list shows them)`), 2;
   if (!b) return say("git-rescue has changed nothing here, so there is nothing to undo."), 0;
   const norm = (/** @type {string} */ p) => p.replace(/\\/g, "/").toLowerCase();
   if (b.top && norm(b.top) !== norm(repo.top)) {

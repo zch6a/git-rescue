@@ -19,12 +19,12 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-import { branches, commitInfo, git, gitOk, gitRun, keepers, objectSizes, objectTime, readObjects, refs, reflog, resolve, samePath, short, toplevel, unreachableFromRefs, unreachableObjects, worktrees } from "./git.js";
+import { branches, commitInfo, git, gitOk, gitRun, keepers, objectSizes, objectTime, readObjects, refs, reflog, remember, resolve, samePath, scratchIndex, short, toplevel, unreachableFromRefs, unreachableObjects, worktrees } from "./git.js";
 import { describe } from "./timeline.js";
 
 /**
  * @typedef {{title: string, risk: "safe" | "careful" | "manual", steps: string[][], note?: string}} Option
- * @typedef {{id: string, level: "problem" | "warning" | "info", title: string, detail: string, options: Option[], commits?: string[]}} Finding
+ * @typedef {{id: string, level: "problem" | "warning" | "info", title: string, detail: string, options: Option[], commits?: string[], key?: string}} Finding
  * @typedef {{gitDir: string, commonDir: string, top: string, bare?: boolean}} Repo
  */
 
@@ -40,6 +40,21 @@ const RECENT = 100; // reflog entries looked at, per reflog
 const DAY = 24 * 3600 * 1000;
 
 /**
+ * The operation under way, from the files git leaves while it runs: "rebase", "am", "merge", "cherry-pick",
+ * "revert", "bisect", or null.
+ * @param {string} gitDir
+ */
+export function operationIn(gitDir) {
+  const g = (/** @type {string} */ name) => existsSync(join(gitDir, name));
+  if (g("rebase-merge") || g("rebase-apply")) return g("rebase-apply/applying") ? "am" : "rebase";
+  if (g("MERGE_HEAD")) return "merge";
+  if (g("CHERRY_PICK_HEAD")) return "cherry-pick";
+  if (g("REVERT_HEAD")) return "revert";
+  if (g("BISECT_LOG")) return "bisect";
+  return null;
+}
+
+/**
  * The state around the user: where HEAD is, what is under way, what is changed.
  * @param {string} cwd
  * @param {Repo} repo
@@ -47,14 +62,7 @@ const DAY = 24 * 3600 * 1000;
 export function state(cwd, repo) {
   const head = git(cwd, ["symbolic-ref", "--quiet", "HEAD"], { allowFail: true }).trim();
   const headSha = resolve(cwd, "HEAD");
-  const g = (/** @type {string} */ name) => join(repo.gitDir, name);
-  let operation = null;
-  if (existsSync(g("rebase-merge")) || existsSync(g("rebase-apply"))) {
-    operation = existsSync(g("rebase-apply/applying")) ? "am" : "rebase";
-  } else if (existsSync(g("MERGE_HEAD"))) operation = "merge";
-  else if (existsSync(g("CHERRY_PICK_HEAD"))) operation = "cherry-pick";
-  else if (existsSync(g("REVERT_HEAD"))) operation = "revert";
-  else if (existsSync(g("BISECT_LOG"))) operation = "bisect";
+  const operation = operationIn(repo.gitDir);
   const files = repo.bare ? [] : statusEntries(cwd);
   const lock = join(repo.gitDir, "index.lock");
   // A submodule: the repository it is part of (git 2.13+), and the submodules this one has.
@@ -108,7 +116,9 @@ export function diagnose(cwd, repo) {
   const st = state(cwd, repo);
   /** @type {Finding[]} */
   const findings = [];
-  const keep = keepers(cwd);
+  // While an operation is under way, what it has done so far is on HEAD (a rebase's new commits, on a detached
+  // HEAD): that is work in progress, not lost.
+  const keep = st.operation && st.headSha ? [...keepers(cwd), st.headSha] : keepers(cwd);
   const ctx = {
     cwd,
     repo,
@@ -133,6 +143,15 @@ export function diagnose(cwd, repo) {
 
   const order = { problem: 0, warning: 1, info: 2 };
   findings.sort((a, b) => order[a.level] - order[b.level]);
+  // A key that names the finding whatever its number: the kind and its first commit. Numbers change after a fix;
+  // `fix KEY/a` from a script either finds the same finding or refuses.
+  const seen = new Map();
+  for (const f of findings) {
+    const base = f.commits?.length ? `${f.id}:${short(f.commits[0])}` : f.id;
+    const n = (seen.get(base) ?? 0) + 1;
+    seen.set(base, n);
+    f.key = n === 1 ? base : `${base}-${n}`;
+  }
   return { state: st, findings };
 }
 
@@ -150,17 +169,76 @@ function lostTips(cwd, repo, keep) {
 }
 
 /**
- * The commits lost from `tip`, less those whose patch is already in `against` (a rebase, an amend of the message).
+ * The commits lost from `tip`, less those whose patch is already in `against` (a rebase, an amend of the message);
+ * none when all their changes together are already in a branch (a squash or fixup rebase, a squash merge, a
+ * rebase of another branch, a pull request squash-merged on the server).
  * @param {{cwd: string, keep: string[], reported: Set<string>}} ctx @param {string} tip @param {string | null} against
  */
 function lostFrom(ctx, tip, against) {
-  let lost = unreachableFromRefs(ctx.cwd, [tip], ctx.keep).filter((c) => !ctx.reported.has(c));
+  const all = unreachableFromRefs(ctx.cwd, [tip], ctx.keep);
+  let lost = all.filter((c) => !ctx.reported.has(c));
   if (lost.length && against) {
     const same = new Set(git(ctx.cwd, ["cherry", against, tip], { allowFail: true }).split("\n")
       .filter((l) => l.startsWith("- ")).map((l) => l.slice(2).trim()));
     lost = lost.filter((c) => !same.has(c));
   }
+  if (lost.length && contained(ctx.cwd, tip, all)) return [];
   return lost;
+}
+
+/**
+ * Whether everything the commits `all` (ending at `tip`) changed is already in a branch, a remote-tracking branch
+ * or HEAD: their changes, from just before the first of them to `tip`, taken back out of that commit's files
+ * (`git apply --cached --check -R`, in an index outside the repository). One patch at a time (`git cherry`) misses
+ * a squash; this does not. When the run of commits has more than one starting point (a merge of other lost
+ * history), no answer: the commits are judged one by one.
+ * @param {string} cwd @param {string} tip @param {string[]} all
+ */
+function contained(cwd, tip, all) {
+  const set = new Set(all);
+  const info = commitInfo(cwd, all);
+  const bases = new Set();
+  for (const c of all) {
+    const parents = info.get(c)?.parents ?? [];
+    for (const p of parents) if (!set.has(p)) bases.add(p);
+    if (!parents.length) bases.add(EMPTY_TREE);
+  }
+  if (bases.size !== 1) return false;
+  const [base] = bases;
+  const patch = git(cwd, ["diff", "--binary", "--full-index", "--no-color", "--no-ext-diff", "--no-textconv", base, tip], { allowFail: true, raw: true });
+  if (!patch.length) return true; // nothing changed in the end
+  const tipTree = git(cwd, ["rev-parse", `${tip}^{tree}`], { allowFail: true }).trim();
+  for (const t of targets(cwd)) {
+    // HEAD is a place the changes may be kept, unless HEAD has these very commits (a detached HEAD with commits
+    // is exactly what is being judged then).
+    if (t.head && gitOk(cwd, ["merge-base", "--is-ancestor", tip, t.sha])) continue;
+    if (t.tree === tipTree) return true;
+    const index = scratchIndex(cwd, t.sha);
+    if (index && gitOk(cwd, ["apply", "--cached", "--check", "-R", "-"], { input: patch, env: { GIT_INDEX_FILE: index } })) return true;
+  }
+  return false;
+}
+
+/** git's empty tree, the "parent" of a first commit. */
+const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/**
+ * Where lost changes may already be: HEAD, then the most recently changed branches and remote-tracking branches
+ * (30 at most), each with its tree.
+ * @param {string} cwd @returns {{sha: string, tree: string, head: boolean}[]}
+ */
+function targets(cwd) {
+  return remember(`targets ${cwd}`, () => {
+    const out = git(cwd, ["for-each-ref", "--sort=-committerdate", "--count=30", "--format=%(objectname) %(tree)", "refs/heads", "refs/remotes"], { allowFail: true });
+    const head = git(cwd, ["log", "-1", "--no-show-signature", "--format=%H %T", "HEAD"], { allowFail: true }).trim();
+    /** @type {Map<string, {sha: string, tree: string, head: boolean}>} */
+    const m = new Map();
+    for (const [i, line] of [head, ...out.split("\n")].entries()) {
+      const [sha, tree] = line.trim().split(" ");
+      if (/^[0-9a-f]{40}$/.test(sha ?? "") && tree && !m.has(sha)) m.set(sha, { sha, tree, head: i === 0 });
+    }
+    return [...m.values()];
+  });
 }
 
 // ---------------------------------------------------------------- an operation left half done
@@ -188,15 +266,25 @@ function inProgress(cwd, repo, st, add) {
     const total = read("end") || read("last");
     const branch = read("head-name").replace(/^refs\/heads\//, "");
     const cmd = op === "am" ? "am" : "rebase";
+    // A patch that does not apply at all stops `git am` with no file in conflict: there is nothing to resolve,
+    // and `am --continue` would only say "No changes". The patch has to be applied by hand first.
+    const unapplied = op === "am" && !st.conflicted.length && existsSync(join(repo.gitDir, dir, "patch"));
+    const finish = unapplied
+      ? [[`apply the patch by hand: git apply --reject ${dir === "rebase-apply" ? ".git/rebase-apply/patch" : "the patch"} applies what fits and leaves .rej files for the rest; edit those parts in`], ["add", "--all"], ["am", "--continue"]]
+      : [...resolveStep, [cmd, "--continue"]];
     add({
       id: `${op}-in-progress`,
       level: "problem",
       title: op === "am" ? "A `git am` (applying patches) stopped halfway" : `A rebase${branch ? ` of ${branch}` : ""} stopped halfway${done && total ? ` (at commit ${done} of ${total})` : ""}`,
-      detail: `${files} Until it is finished or abandoned, the branch is not where you think it is.`,
+      detail: unapplied
+        ? `The patch "${read("final-commit") || read("msg").split("\n")[0] || "being applied"}" does not apply to these files (git am does not merge). Until it is finished or abandoned, the branch is not where you think it is.`
+        : `${files} Until it is finished or abandoned, the branch is not where you think it is.`,
       options: [
         { title: `Abandon it: put ${branch || "the branch"} back as it was before`, risk: "careful", steps: [[cmd, "--abort"]], note: copied },
-        { title: "Finish it: resolve the conflicts, then go on", risk: "manual", steps: [...resolveStep, [cmd, "--continue"]] },
-        { title: "Leave this commit out and go on with the rest", risk: "careful", steps: [[cmd, "--skip"]], note: "The commit's changes are dropped from the result (it stays findable with `git-rescue timeline`)." },
+        { title: unapplied ? "Finish it: apply the patch by hand, then go on" : "Finish it: resolve the conflicts, then go on", risk: "manual", steps: finish },
+        op === "am"
+          ? { title: "Leave this patch out and go on with the rest", risk: "careful", steps: [[cmd, "--skip"]], note: "The patch is not applied; the file it came from still has it." }
+          : { title: "Leave this commit out and go on with the rest", risk: "careful", steps: [[cmd, "--skip"]], note: "The commit's changes are dropped from the result (it stays findable with `git-rescue timeline`)." },
       ],
     });
   } else if (op === "merge") {
@@ -327,10 +415,13 @@ function deletedBranches(ctx) {
  * @param {Ctx} ctx
  */
 function rewound(ctx) {
+  const here = toplevel(ctx.cwd);
+  /** @type {Map<string, string>} */
+  const elsewhere = new Map(worktrees(ctx.cwd).filter((w) => w.branch && !samePath(w.path, here)).map((w) => [/** @type {string} */ (w.branch), w.path]));
   for (const branch of branches(ctx.cwd)) {
     const tipNow = resolve(ctx.cwd, `refs/heads/${branch}`);
     for (const e of reflog(ctx.repo, `refs/heads/${branch}`).slice(0, RECENT)) {
-      if (e.old === e.new || /^0+$/.test(e.old) || ctx.reported.has(e.old) || !ctx.lost.has(e.old)) continue;
+      if (e.old === e.new || /^0+$/.test(e.old) || ctx.reported.has(e.old) || !ctx.lost.has(e.old) || forward(ctx, e)) continue;
       // An amend is judged against the commit that replaced it (a message-only amend changed nothing, even if a
       // later amend changed the content); anything else against where the branch is now.
       const lost = lostFrom(ctx, e.old, e.message.startsWith("commit (amend)") ? e.new : tipNow);
@@ -354,8 +445,9 @@ function rewound(ctx) {
           : `${branch} was at ${short(e.old)} before; no branch has ${lost.length > 1 ? "these commits" : "this commit"} now:\n${listCommits(ctx.cwd, lost)}`,
         commits: lost,
         options: [
-          { title: `Keep them on a new branch "${name}" (${branch} stays as it is)`, risk: "safe", steps: [["branch", name, e.old]] },
-          ...(amendOnly ? [] : [{
+          { title: `Keep them on a new branch "${name}" (${branch} stays as it is)`, risk: "safe", steps: [["branch", name, e.old]],
+            ...(elsewhere.has(branch) ? { note: `${branch} is checked out in ${elsewhere.get(branch)}; to put it back there instead: git reset --keep ${e.old}` } : {}) },
+          ...(amendOnly || elsewhere.has(branch) ? [] : [{
             title: `Put ${branch} back where it was (${short(e.old)})`,
             risk: /** @type {const} */ ("careful"),
             steps: [["checkout", branch], ["reset", "--keep", e.old]],
@@ -377,12 +469,31 @@ function movedAwayOnHead(ctx, st) {
   // judged it. Only the moves made while detached are left here.
   const onBranch = new Set();
   for (const b of branches(ctx.cwd)) for (const e of reflog(ctx.repo, `refs/heads/${b}`).slice(0, RECENT * 2)) onBranch.add(`${e.old} ${e.new} ${e.time}`);
+  // The steps inside a rebase (pick, squash, fixup ... finish) replace commits on the way: a squash folds in the
+  // pick before it, a fixup rewrites the original. A rebase is judged whole: from where it started (the "start"
+  // entry, kept here) to where the branch ended (its own reflog, in rewound()).
+  const REBASE_STEP = /^(?:pull --rebase|rebase(?: -i| -m)?) \((?!start)\w+\)|^rebase(?: finished)?: /;
   for (const e of reflog(ctx.repo, "HEAD").slice(0, RECENT)) {
-    if (onBranch.has(`${e.old} ${e.new} ${e.time}`)) continue;
-    if (e.old === e.new || /^0+$/.test(e.old) || ctx.reported.has(e.old) || !ctx.lost.has(e.old)) continue;
+    if (onBranch.has(`${e.old} ${e.new} ${e.time}`) || REBASE_STEP.test(e.message)) continue;
+    if (e.old === e.new || /^0+$/.test(e.old) || ctx.reported.has(e.old) || !ctx.lost.has(e.old) || forward(ctx, e)) continue;
     const lost = lostFrom(ctx, e.old, st.headSha);
     if (!lost.length) continue;
     lost.forEach((c) => ctx.reported.add(c));
+    const from = e.message.match(/^checkout: moving from (\S+) to /)?.[1];
+    if (from && !/^[0-9a-f]{40}$/.test(from)) {
+      // HEAD left a branch that was deleted or moved since (a branch of that name may exist again, without them).
+      const again = branches(ctx.cwd).includes(from);
+      const rescue = rescueName(`${from}-before`, e.old);
+      ctx.add({
+        id: "left-behind-on-branch",
+        level: "warning",
+        title: `${plural(lost.length, "commit")} that were on "${from}" when you left it ${ago(e.time)} are on no branch now`,
+        detail: `"${from}" was deleted or moved since${again ? ` (a branch called "${from}" exists again, without them)` : ""}:\n${listCommits(ctx.cwd, lost)}`,
+        commits: lost,
+        options: [{ title: `Keep them on a new branch "${rescue}"`, risk: "safe", steps: [["branch", rescue, e.old]] }],
+      });
+      continue;
+    }
     const name = rescueName("detached", e.old);
     const leaving = /^checkout: moving from [0-9a-f]{40} to /.test(e.message);
     ctx.add({
@@ -396,6 +507,15 @@ function movedAwayOnHead(ctx, st) {
       options: [{ title: `Put them on a new branch "${name}"`, risk: "safe", steps: [["branch", name, e.old]] }],
     });
   }
+}
+
+/**
+ * A move that only went forward (a commit, a fast-forward): what was there before is still under the new
+ * position, so the move dropped nothing; if the new position is lost, a later move says so.
+ * @param {Ctx} ctx @param {{old: string, new: string}} e
+ */
+function forward(ctx, e) {
+  return gitOk(ctx.cwd, ["merge-base", "--is-ancestor", e.old, e.new]);
 }
 
 // ---------------------------------------------------------------- what no ref and no reflog reaches
@@ -412,7 +532,7 @@ function unreachableCommits(ctx, objs) {
   const candidates = hideStashParts(objs.commits).filter((c) => !stashLike.has(c.sha) && !ctx.reported.has(c.sha));
   if (!candidates.length) return;
   const parents = new Set(candidates.flatMap((c) => c.parents));
-  const head = resolve(ctx.cwd, "HEAD");
+  const head = resolve(ctx.cwd, "HEAD"); // and, in lostFrom, every recent branch and remote-tracking branch
   /** @type {{tip: typeof candidates[number], lost: string[]}[]} */
   const lines = [];
   for (const tip of candidates.filter((c) => !parents.has(c.sha))) { // newest first already
@@ -428,8 +548,9 @@ function unreachableCommits(ctx, objs) {
     id: "unreachable-commits",
     level: recent ? "warning" : "info",
     title: `${plural(all.length, "commit")} that nothing points to, not even the reflog`,
-    detail: `No branch, tag or reflog entry has ${all.length > 1 ? "them" : "it"}: the reflog entries expired, or this repository keeps no reflog " +
-      "(a bare repository on a server does not, so a force push leaves the old commits like this). ` +
+    detail: `No branch, tag or reflog entry has ${all.length > 1 ? "them" : "it"}: the reflog entries expired, a remote branch ` +
+      "was removed by `fetch --prune`, or this repository keeps no reflog (a bare repository on a server does not, so a " +
+      "force push leaves the old commits like this). " +
       `\`git gc\` deletes them once they are about two weeks old:\n${listCommits(ctx.cwd, all)}`,
     commits: all,
     options: lines.slice(0, 3).map(({ tip, lost }) => {
@@ -517,10 +638,18 @@ const STASH = /^(WIP on|On) [^:]+:/;
  * @param {string} cwd @param {ReturnType<typeof lostObjects>} lost @param {(f: Finding) => void} add @param {ReturnType<typeof state>} st
  */
 function droppedStashes(cwd, lost, add, st) {
-  const stashes = lost.commits.filter((c) => STASH.test(c.subject) && c.parents.length >= 2);
-  for (const s of stashes.slice(0, 10)) {
-    const files = stashFiles(cwd, s.sha, s.parents[0]);
-    if (!st.bare && stashApplied(cwd, s.sha, s.parents[0], files)) continue;
+  const stashes = lost.commits.filter((c) => STASH.test(c.subject) && c.parents.length >= 2).slice(0, 10);
+  // The same work stashed twice (a pop, then a stash of it again) is one loss: same files, same untracked files.
+  const trees = git(cwd, ["cat-file", "--batch-check=%(objectname)"], { allowFail: true,
+    input: stashes.flatMap((s) => [`${s.sha}^{tree}`, s.parents[2] ? `${s.parents[2]}^{tree}` : "-"]).join("\n") + "\n" }).split("\n");
+  const seen = new Set();
+  for (const [i, s] of stashes.entries()) {
+    const same = `${trees[2 * i]} ${trees[2 * i + 1]}`;
+    if (seen.has(same)) continue;
+    seen.add(same);
+    const entries = stashFiles(cwd, s);
+    if (!st.bare && stashApplied(cwd, entries)) continue;
+    const files = entries.map((e) => e.path);
     const shown = files.slice(0, 5).join(", ") + (files.length > 5 ? ` and ${files.length - 5} more` : "");
     add({
       id: "dropped-stash",
@@ -534,16 +663,17 @@ function droppedStashes(cwd, lost, add, st) {
 }
 
 /**
- * Three git calls per stash, whatever the number of files: the files it changed, then the stash's, HEAD's and
- * the index's version of each in one `cat-file --batch-check` (it takes `rev:path` names), then the working
- * tree's in one `hash-object` (with the same filters as `git add`).
- * @param {string} cwd @param {string} stash @param {string} base @param {string[]} [files]
+ * A few git calls per stash, whatever the number of files: the files it holds, then the stash's, HEAD's and the
+ * index's version of each in one `cat-file --batch-check` (it takes `rev:path` names), then the working tree's in
+ * one `hash-object` (with the same filters as `git add`).
+ * @param {string} cwd @param {{path: string, spec: string}[]} entries
  */
-function stashApplied(cwd, stash, base, files = stashFiles(cwd, stash, base)) {
-  const names = files.filter((f) => !/[\n\r]/.test(f)).slice(0, 200);
+function stashApplied(cwd, entries) {
+  const list = entries.filter((e) => !/[\n\r]/.test(e.path)).slice(0, 200);
+  const names = list.map((e) => e.path);
   if (!names.length) return true;
   const lines = git(cwd, ["cat-file", "--batch-check=%(objectname)"], { allowFail: true,
-    input: names.flatMap((f) => [`${stash}:${f}`, `HEAD:${f}`, `:${f}`]).join("\n") + "\n" }).split("\n");
+    input: list.flatMap((e) => [e.spec, `HEAD:${e.path}`, `:${e.path}`]).join("\n") + "\n" }).split("\n");
   const id = (/** @type {number} */ i) => (/^[0-9a-f]{40}$/.test(lines[i] ?? "") ? lines[i] : "");
   const top = toplevel(cwd);
   const onDisk = names.filter((f) => existsSync(join(top, f)));
@@ -556,9 +686,21 @@ function stashApplied(cwd, stash, base, files = stashFiles(cwd, stash, base)) {
   });
 }
 
-/** The files a stash changed. @param {string} cwd @param {string} stash @param {string} base */
-function stashFiles(cwd, stash, base) {
-  return git(cwd, ["diff", "--no-ext-diff", "--no-color", "--name-only", "-z", base, stash], { allowFail: true }).split("\0").filter(Boolean);
+/**
+ * The files a stash holds, each with the name of its stashed version: the tracked files it changed, and with
+ * `stash -u` the untracked ones (in its third parent).
+ * @param {string} cwd @param {{sha: string, parents: string[]}} s
+ * @returns {{path: string, spec: string}[]}
+ */
+function stashFiles(cwd, s) {
+  const tracked = git(cwd, ["diff", "--no-ext-diff", "--no-color", "--name-only", "-z", s.parents[0], s.sha], { allowFail: true }).split("\0").filter(Boolean);
+  const out = tracked.map((path) => ({ path, spec: `${s.sha}:${path}` }));
+  if (s.parents[2]) {
+    for (const path of git(cwd, ["ls-tree", "-r", "-z", "--name-only", s.parents[2]], { allowFail: true }).split("\0").filter(Boolean)) {
+      out.push({ path, spec: `${s.parents[2]}:${path}` });
+    }
+  }
+  return out;
 }
 
 /**
@@ -604,12 +746,15 @@ function upstreamRewritten(cwd, repo, st, add) {
   if (!st.branch) return;
   const up = git(cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], { allowFail: true }).trim();
   if (!up || up.startsWith("@{u}")) return;
-  const forced = reflog(repo, `refs/remotes/${up}`).find((e) => /forced-update/.test(e.message) && Date.now() - e.time < 30 * DAY);
-  if (!forced) return;
-  // Only while the branch still has the old history and the new upstream does not: after a rebase onto the
-  // new one, or a reset to it, there is nothing left to do.
+  // Every forced update of the last 30 days, newest first: the one that matters is the one whose old history the
+  // branch still has and the new upstream does not (after a rebase onto the new one, or a reset to it, none).
+  // Rewritten twice, the newest one's "old" is the first rewrite, which the branch never had.
   const isAncestor = (/** @type {string} */ a, /** @type {string} */ b) => gitOk(cwd, ["merge-base", "--is-ancestor", a, b]);
-  if (!isAncestor(forced.old, st.branch) || isAncestor(forced.old, up)) return;
+  const branch = /** @type {string} */ (st.branch);
+  const forced = reflog(repo, `refs/remotes/${up}`)
+    .filter((e) => /forced-update/.test(e.message) && Date.now() - e.time < 30 * DAY)
+    .find((e) => isAncestor(e.old, branch) && !isAncestor(e.old, up));
+  if (!forced) return;
   const mine = git(cwd, ["rev-list", `${up}..${st.branch}`], { allowFail: true }).split("\n").filter(Boolean);
   const ownSinceOld = git(cwd, ["rev-list", `${forced.old}..${st.branch}`], { allowFail: true }).split("\n").filter(Boolean);
   if (!mine.length) return;

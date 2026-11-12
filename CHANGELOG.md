@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.4.0 — 2026-11-12
+
+A second independent review found 22 problems; all are fixed, each with a test.
+
+- No false alarm for squash and fixup rebases, a rebase followed by switching branch, the middle of a rebase,
+  a squash merge, a pull request squash-merged on the server and pruned, or an old rebase of another branch:
+  lost commits whose changes are all in a branch (local or remote-tracking) or HEAD are not reported.
+- Now found: a dropped `stash -u` holding only new files; files staged in a repository with no commits yet;
+  an upstream force-pushed twice; commits left on a branch that was deleted and made again (said as such,
+  not as a detached HEAD).
+- `fix KEY[/a]`: findings have a `key` in `--json` that does not change after a fix; a stale key is refused.
+- `undo STAMP` undoes an earlier fix; `undo --list --json`. Undo after abandoning a rebase or merge leaves
+  HEAD where it is instead of on a commit from the middle of it.
+- Backups: stamps to the millisecond and never reused (two in one second lost the first); a submodule with
+  changes no longer stops the backup; a hand-edited `rescue.log` line is ignored, not handed to git.
+- A branch checked out in another worktree is not offered a `checkout` that cannot work.
+- `git am` with a patch that does not apply: "finish it" says to apply it by hand (`git apply --reject`).
+- Exit codes: an option that starts with you exits 1; documented per command. Run from a subfolder, the
+  report says the commands are for the top folder, and fixes run there.
+- The backup message names a locked index instead of conflicts when that is the cause; a stray quote in the
+  no-reflog finding's text.
+- CI also runs on git 2.17.0, built from source.
+
 ## 0.3.0 — 2026-11-12
 
 - New finding: commits that nothing points to, not even the reflog (an expired reflog; a bare repository after

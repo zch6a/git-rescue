@@ -3,7 +3,9 @@
  * Every option of every finding, run for real: each kind of finding is staged in a fresh repository, each option
  * that git-rescue runs (not those that start with something the user does) is applied with `fix --yes`, and then:
  * the finding is gone, an uncommitted edit elsewhere survived, and `undo --yes` puts every branch and HEAD back
- * where they were. An abandoned operation (merge, rebase ...) cannot come back, but the refs do.
+ * where they were. An abandoned operation (merge, rebase ...) cannot come back, and undo leaves HEAD where the
+ * abandoning put it (back on the branch) rather than on a commit from the middle of the operation; the branches
+ * come back.
  */
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -31,7 +33,7 @@ function conflict(dir, file = "c.txt") {
   commit(dir, file, "ours\n", "ours");
 }
 
-/** @type {Record<string, {id: string, dirty: boolean, make: () => string, keep?: string[]}>} */
+/** @type {Record<string, {id: string, dirty: boolean, make: () => string, keep?: string[], op?: boolean}>} */
 const SCENARIOS = {
   reset: { id: "dropped-by-reset", dirty: true, make() {
     const d = base(); commit(d, "a.txt", "1\n", "one"); commit(d, "a.txt", "2\n", "two");
@@ -72,23 +74,23 @@ const SCENARIOS = {
   "stale lock": { id: "index-lock", dirty: true, make() {
     const d = base(); edit(d); writeFileSync(join(d, ".git", "index.lock"), ""); return d;
   } },
-  merge: { id: "merge-in-progress", dirty: false, make() {
+  merge: { id: "merge-in-progress", dirty: false, op: true, make() {
     const d = base(); conflict(d); tryGit(d, "merge", "-q", "other", "--no-edit"); return d;
   } },
-  rebase: { id: "rebase-in-progress", dirty: false, make() {
+  rebase: { id: "rebase-in-progress", dirty: false, op: true, make() {
     const d = base(); conflict(d); git(d, "checkout", "-q", "other"); tryGit(d, "rebase", "main"); return d;
   } },
-  "cherry-pick": { id: "cherry-pick-in-progress", dirty: false, make() {
+  "cherry-pick": { id: "cherry-pick-in-progress", dirty: false, op: true, make() {
     const d = base(); conflict(d); tryGit(d, "cherry-pick", "other"); return d;
   } },
-  revert: { id: "revert-in-progress", dirty: false, make() {
+  revert: { id: "revert-in-progress", dirty: false, op: true, make() {
     const d = base(); commit(d, "c.txt", "1\n", "c1"); commit(d, "c.txt", "2\n", "c2"); tryGit(d, "revert", "--no-edit", "HEAD~1"); return d;
   } },
-  am: { id: "am-in-progress", dirty: false, make() {
+  am: { id: "am-in-progress", dirty: false, op: true, make() {
     const d = base(); conflict(d); const patch = join(folder("patch"), "p.patch");
     writeFileSync(patch, git(d, "format-patch", "-1", "--stdout", "other") + "\n"); tryGit(d, "am", patch); return d;
   } },
-  bisect: { id: "bisect-in-progress", dirty: false, make() {
+  bisect: { id: "bisect-in-progress", dirty: false, op: true, make() {
     const d = base(); commit(d, "a.txt", "1\n", "one"); commit(d, "a.txt", "2\n", "two");
     git(d, "bisect", "start"); git(d, "bisect", "bad"); git(d, "bisect", "good", "HEAD~2"); return d;
   } },
@@ -106,9 +108,10 @@ function tryGit(dir, ...args) {
   try { git(dir, ...args); } catch { /* stopped on a conflict, as intended */ }
 }
 
-/** Where every branch and HEAD are. @param {string} dir */
-function refsNow(dir) {
+/** Where every branch and HEAD are (only the branches with `branchesOnly`). @param {string} dir @param {boolean} [branchesOnly] */
+function refsNow(dir, branchesOnly = false) {
   const heads = git(dir, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads");
+  if (branchesOnly) return heads;
   let head;
   try { head = git(dir, "symbolic-ref", "-q", "HEAD"); } catch { head = git(dir, "rev-parse", "HEAD"); }
   return `${head}\n${heads}`;
@@ -132,7 +135,7 @@ for (const [name, s] of Object.entries(SCENARIOS)) {
       if (opt.risk === "manual") return;
       const letter = String.fromCharCode(97 + k);
       const dir = s.make();
-      const before = refsNow(dir);
+      const before = refsNow(dir, s.op);
       const fix = cli(dir, "fix", `${i + 1}${letter}`, "--yes");
       assert.equal(fix.code, 0, `${name} ${letter}) ${opt.title}\n${fix.out}${fix.err}`);
       ran++;
@@ -140,7 +143,7 @@ for (const [name, s] of Object.entries(SCENARIOS)) {
       if (s.dirty) assert.equal(readFileSync(join(dir, "notes.txt"), "utf8"), EDIT, `${name} ${letter}): the uncommitted edit survived the fix`);
       const undo = cli(dir, "undo", "--yes");
       assert.equal(undo.code, 0, `${name} ${letter}) undo\n${undo.out}${undo.err}`);
-      assert.equal(refsNow(dir), before, `${name} ${letter}): undo put every branch and HEAD back\n${undo.out}`);
+      assert.equal(refsNow(dir, s.op), before, `${name} ${letter}): undo put every branch${s.op ? "" : " and HEAD"} back\n${undo.out}`);
       if (s.dirty) assert.equal(readFileSync(join(dir, "notes.txt"), "utf8"), EDIT, `${name} ${letter}): the uncommitted edit survived the undo`);
     });
     assert.ok(ran > 0, "at least one option ran");
