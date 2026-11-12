@@ -169,3 +169,12 @@ Not a polishing round: the first screen and the launch, ahead of promoting it (t
 - **A social preview image** (`docs/social-preview.png`, 1280×640, from `scripts/social-card.html` with headless Chrome). It has to be uploaded in the repository's settings on the website.
 - The npm package lists only `docs/COMPATIBILITY.md` from `docs/`, not the images.
 - Launch drafts (Show HN, Reddit, V2EX, 掘金, X and 即刻, answers for the first 48 hours) are kept outside the repository. The npm name `git-rescue` is free; whether to publish is the owner's call.
+
+## Agent Skill — 2026-11-12 (1.1.0)
+
+The plan in PROGRESS.md: give the finished tools an entry point for AI coding assistants, where most of the attention is now (skills and tools for agents dominate GitHub Trending this month). git-rescue first, since its `--json` and stable keys were made for scripts.
+
+- `plugin/skills/git-rescue/SKILL.md`: when to use it (the description is what an assistant matches requests against), what not to do before the diagnosis (`gc`, `prune`, `reflog expire`, `reset`, `checkout -- .`, `clean`, aborting a stuck rebase: they destroy what can be recovered), diagnose with `--json`, explain the findings and their risk, apply only after the user agrees to that option, by key (numbers shift after a fix; a stale key is refused), then mention `undo`; lost staged files by `find` and `restore`; never push, never delete the backups. Only the frontmatter fields every skill host accepts (name, description, license, compatibility, metadata), so the folder also works copied into a skills directory.
+- `.claude-plugin/marketplace.json` at the root and `plugin/.claude-plugin/plugin.json`: the repository is its own marketplace (the plugin in a subfolder, so installing does not pull the rest). `claude plugin validate` passes for both. Not installed here: adding a marketplace writes to the user's Claude Code settings.
+- `test/skill.test.js`: the frontmatter (portable fields, lengths, no angle brackets), the plugin and marketplace names and the version against package.json, and every command in the skill's bash blocks, taken from the file and run in order on a staged accident (report, timeline, fix by key, undo, find, restore), checking the JSON fields the skill names. It failed once: `timeline` was only mentioned in a sentence, not in a command block; it is in one now, which is also clearer for an assistant.
+- README section "Let your AI coding assistant do it", both languages.

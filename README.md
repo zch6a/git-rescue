@@ -39,6 +39,22 @@ npx github:zch6a/git-rescue        # run it in the repository that is in trouble
 - **It is quiet on ordinary days.** A rebase, a squash, a `stash pop`, a squash merge: none of these is a loss,
   and none is reported as one. Two independent reviews hunted for false alarms.
 
+## Let your AI coding assistant do it
+
+git-rescue comes with an Agent Skill. In Claude Code:
+
+```text
+/plugin marketplace add zch6a/git-rescue
+/plugin install git-rescue@git-rescue
+```
+
+Then say what happened ("I ran reset --hard by mistake", "my rebase is stuck", "where did my stash go"). The
+assistant runs git-rescue, tells you what it found and what is at stake, and applies a fix only after you agree to
+that option, by the finding's stable key, with git-rescue's backup and `undo`. The skill also tells it not to run
+`gc`, `prune` or `reset` before the diagnosis, so the evidence survives. Assistants that read Agent Skills from a
+folder: copy [`plugin/skills/git-rescue`](plugin/skills/git-rescue/SKILL.md) into theirs (for Claude Code,
+`~/.claude/skills/`).
+
 ## What it finds
 
 It reads the repository's state, not timing guesses: each finding is something that is the case, with the
@@ -109,7 +125,7 @@ instead: `git-rescue fix dropped-by-reset:39f66d49/a --yes` applies option a of 
 ```jsonc
 // git-rescue --json
 {
-  "format": 1, "version": "1.0.0",
+  "format": 1, "version": "1.1.0",
   "state": { "branch": "main", "headSha": "…", "unborn": false, "bare": false, "operation": null,
              "conflicted": [], "changed": 0, "untracked": 0, "lockAge": null,
              "superproject": null, "submodules": [] },

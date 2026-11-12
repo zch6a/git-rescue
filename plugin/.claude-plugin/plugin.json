@@ -1,0 +1,10 @@
+{
+  "name": "git-rescue",
+  "description": "Recover from git accidents: diagnose what happened (reset --hard, deleted branches, dropped stashes, stuck rebases, lost staged files) and fix it with a backup and an undo, only after you agree.",
+  "version": "1.1.0",
+  "author": { "name": "zch6a" },
+  "homepage": "https://github.com/zch6a/git-rescue",
+  "repository": "https://github.com/zch6a/git-rescue",
+  "license": "MIT",
+  "keywords": ["git", "recovery", "undo", "reflog", "lost-commits"]
+}

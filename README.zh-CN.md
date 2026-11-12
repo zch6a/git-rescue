@@ -33,6 +33,17 @@ npx github:zch6a/git-rescue        # 在出问题的仓库里运行；你同意�
 - **放心试。** 你选一个选项并同意之前什么都不改；改之前先备份所有分支、HEAD 和没提交的修改；`git-rescue undo` 精确撤回这次修复改动的东西。测试会把每种问题的每个选项都真跑一遍再撤销，覆盖 git 2.17 到最新版、Windows/macOS/Linux。
 - **平时不打扰。** rebase、squash、`stash pop`、squash 合并都不算丢失，也不会被报成丢失。两次独立审查专门找过误报。
 
+## 交给 AI 编程助手
+
+git-rescue 自带一个 Agent Skill（技能）。在 Claude Code 里：
+
+```text
+/plugin marketplace add zch6a/git-rescue
+/plugin install git-rescue@git-rescue
+```
+
+然后直接说发生了什么（“我不小心 reset --hard 了”“rebase 卡住了”“我的 stash 去哪了”）。助手会运行 git-rescue，告诉你发现了什么、哪些东西有风险，只有在你同意某个选项之后才按问题的固定 key 执行修复，并且有 git-rescue 的备份和 `undo`。技能还会叮嘱它在诊断之前不要运行 `gc`、`prune`、`reset`，免得把证据毁掉。从文件夹读取技能的其他助手：把 [`plugin/skills/git-rescue`](plugin/skills/git-rescue/SKILL.md) 复制到它们的技能文件夹（Claude Code 是 `~/.claude/skills/`）。
+
 ## 能发现什么
 
 它读取的是仓库的实际状态，而不是根据时间去猜：每一条都是确实存在的情况，并列出涉及的提交。
@@ -78,7 +89,7 @@ git-rescue --dry-run        # 只显示，不修改；--json 用于脚本；-C �
 ```jsonc
 // git-rescue --json
 {
-  "format": 1, "version": "1.0.0",
+  "format": 1, "version": "1.1.0",
   "state": { "branch": "main", "headSha": "…", "unborn": false, "bare": false, "operation": null,
              "conflicted": [], "changed": 0, "untracked": 0, "lockAge": null,
              "superproject": null, "submodules": [] },

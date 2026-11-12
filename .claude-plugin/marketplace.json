@@ -1,0 +1,12 @@
+{
+  "name": "git-rescue",
+  "description": "git-rescue for Claude Code: get your work back after a git accident.",
+  "owner": { "name": "zch6a" },
+  "plugins": [
+    {
+      "name": "git-rescue",
+      "source": "./plugin",
+      "description": "Diagnose git accidents and fix them with a backup and an undo, only after you agree."
+    }
+  ]
+}

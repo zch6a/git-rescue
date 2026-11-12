@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.0 — 2026-11-12
+
+- An Agent Skill and a Claude Code plugin: `/plugin marketplace add zch6a/git-rescue`, then
+  `/plugin install git-rescue@git-rescue`. The skill has the assistant diagnose first (and not run `gc`, `prune`
+  or `reset` before), explain what is at stake, and apply a fix only after the user agrees, by the finding's key.
+  A test runs every command the skill gives on a staged accident.
+- README: an animated demo made from real output, and a first screen that says why.
+
 ## 1.0.0 — 2026-11-12
 
 - [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md): what 1.x keeps stable (commands, exit codes per command,

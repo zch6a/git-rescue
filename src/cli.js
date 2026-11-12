@@ -22,7 +22,7 @@ import { GitError, git, gitRun, repoAt, short, version } from "./git.js";
 import { find, inventory, restore } from "./lost.js";
 import { line, timeline } from "./timeline.js";
 
-const VERSION = "1.0.0";
+const VERSION = "1.1.0";
 /** The shape of --json output; it goes up only when a field is removed or changes meaning (see README). */
 const JSON_FORMAT = 1;
 const HELP = `git-rescue ${VERSION}: what just happened to my repository, and how do I get my work back?
