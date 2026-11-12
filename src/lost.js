@@ -11,7 +11,7 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync, writeFileSync } from "node:fs";
-import { relative, resolve as resolvePath } from "node:path";
+import { basename, dirname, resolve as resolvePath } from "node:path";
 
 import { lostObjects } from "./diagnose.js";
 import { KEEP_REFS, commitInfo, git, keepers, objectTime, readObjects, reflog, reflogNames, short, unreachableFromRefs } from "./git.js";
@@ -143,9 +143,15 @@ export function restore(cwd, id, file) {
     // Through git's filters for the name it is restored as (line endings by core.autocrlf and .gitattributes,
     // LFS and other smudge filters), as `git checkout` would write it; the raw contents if the file is outside
     // the repository or git is too old for --filters (2.11).
+    // git says where the file's folder is in the repository: comparing paths here would miss the same folder
+    // spelled differently (a Windows short name like RUNNER~1, a symlink, letter case).
+    const target = resolvePath(cwd, file);
+    const where = existsSync(dirname(target))
+      ? git(dirname(target), ["rev-parse", "--show-toplevel", "--show-prefix"], { allowFail: true }).split("\n")
+      : [];
     const top = git(cwd, ["rev-parse", "--show-toplevel"], { allowFail: true }).trim();
-    const rel = top ? relative(top, resolvePath(cwd, file)).replace(/\\/g, "/") : "";
-    const filtered = rel && !rel.startsWith("..")
+    const rel = top && where.length >= 2 && where[0] === top ? where[1] + basename(target) : "";
+    const filtered = rel
       ? spawnSync("git", ["cat-file", "--filters", `--path=${rel}`, full], { cwd, encoding: null, maxBuffer: 1 << 30, windowsHide: true })
       : null;
     data = filtered && filtered.status === 0 ? filtered.stdout : readObjects(cwd, [full], Number.MAX_SAFE_INTEGER).get(full);

@@ -37,7 +37,7 @@
 - **Worktrees**: git 2.19's fsck ignores other worktrees' HEADs and indexes, so their work looked lost; and undo from another worktree moved a branch checked out there. Now other worktrees' HEADs and staged files count as kept, and undo refuses outside the worktree where the fix ran and skips branches checked out elsewhere.
 - **Smaller**: a bare repository was "not a git repository"; `lost` listed `stash@{1}` and notes as lost (now every ref under `refs/` but the backups, every stash, and not HEAD: `--all` counts HEAD, which hid commits on a detached HEAD); `restore` ignored line-ending conversion (now `cat-file --filters` for the target name); the old-git warning went to stdout; `find --json` exited 0 with no match. The README said a fix that needs a force push is flagged: no such check existed; now it says git-rescue never pushes.
 
-Found while fixing: the first version of "other worktrees keep commits" counted this worktree's own HEAD, so commits on the current detached HEAD looked kept; and `git worktree add -q` does not exist in git 2.19 (the test now runs without it).
+Found while fixing: the first version of "other worktrees keep commits" counted this worktree's own HEAD, so commits on the current detached HEAD looked kept; `git worktree add -q` does not exist in git 2.19 (the test now runs without it); and on GitHub's Windows runners `restore` still wrote LF, because the temp folder is reached by its short name (`RUNNER~1`) while git reports the long one, so comparing the two paths put the file "outside" the repository. Now git itself says where the target's folder is in the repository (reproduced here through a short name, then fixed).
 
 **Tests**: 36 (+16). CI: Windows, macOS and Linux, Node 18 and 24.
 
