@@ -178,3 +178,7 @@ The plan in PROGRESS.md: give the finished tools an entry point for AI coding as
 - `.claude-plugin/marketplace.json` at the root and `plugin/.claude-plugin/plugin.json`: the repository is its own marketplace (the plugin in a subfolder, so installing does not pull the rest). `claude plugin validate` passes for both. Not installed here: adding a marketplace writes to the user's Claude Code settings.
 - `test/skill.test.js`: the frontmatter (portable fields, lengths, no angle brackets), the plugin and marketplace names and the version against package.json, and every command in the skill's bash blocks, taken from the file and run in order on a staged accident (report, timeline, fix by key, undo, find, restore), checking the JSON fields the skill names. It failed once: `timeline` was only mentioned in a sentence, not in a command block; it is in one now, which is also clearer for an assistant.
 - README section "Let your AI coding assistant do it", both languages.
+
+## Lockfile - 2026-11-13
+
+`package-lock.json` recorded the 3 download URLs from this machine's npm mirror (`registry.npmmirror.com`) instead of the public registry, so CI and anyone installing fetched from a mirror they never chose. Every `resolved` URL now points at `registry.npmjs.org`; nothing else changed (same versions, and the integrity hashes still match because the tarballs are identical). Checked: `npm ci --ignore-scripts`, `npm run check` and the tests pass; `npm audit` against the public registry finds 0 vulnerabilities.
