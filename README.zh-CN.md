@@ -30,7 +30,7 @@ npx github:zch6a/git-rescue        # 在出问题的仓库里运行；你同意�
 
 - **读的是实际发生的事，不靠猜。** 每一条都是仓库里确实存在的情况（一条 reflog 记录、rebase 做到一半留下的文件、没有任何东西指向的对象），并列出涉及的提交和它们的标题。
 - **能找回 reflog 看不到的东西。** 你 `git add` 过的每个文件，git 都存了一份；`reset --hard` 或 `checkout .` 之后，大约两周内还在。被丢掉的 stash 也一样。`git-rescue find "某段文字"` 能在里面搜索。
-- **放心试。** 你选一个选项并同意之前什么都不改；改之前先备份所有分支、HEAD 和没提交的修改；`git-rescue undo` 精确撤回这次修复改动的东西。测试会把每种问题的每个选项都真跑一遍再撤销，覆盖 git 2.17 到最新版、Windows/macOS/Linux。
+- **放心试。** 你选一个选项并同意之前什么都不改。改之前先备份所有分支、HEAD 和没提交的修改，`git-rescue undo` 精确撤回这次修复改动的东西。测试会把每种问题的每个选项都真跑一遍再撤销，覆盖 git 2.17 到最新版、Windows/macOS/Linux。
 - **平时不打扰。** rebase、squash、`stash pop`、squash 合并都不算丢失，也不会被报成丢失。两次独立审查专门找过误报。
 
 ## 交给 AI 编程助手
@@ -59,7 +59,7 @@ git-rescue 自带一个 Agent Skill（技能）。在 Claude Code 里：
 - **正在运行的 `git gc`**：它会删掉超过两周、没有任何东西指向的对象；git-rescue 会提醒你等它结束再找回。
 - **别人 force push 过的上游分支**：你的分支还带着旧历史，这时 pull 会把旧历史又合并回来；对应的修复只把你自己的提交接到新历史上。
 
-每一条都会列出涉及的东西：提交（id 和标题）、stash 改过的文件、丢失文件的第一行。在子模块里，HEAD 停在父仓库记录的那个提交上（detached）是 git 的正常做法，不算问题；在父仓库里会列出它的子模块，子模块要单独检查（`-C lib`）。
+每一条都会列出涉及的东西：提交（id 和标题）、stash 改过的文件、丢失文件的第一行。在子模块里，HEAD 停在父仓库记录的那个提交上（detached）是 git 的正常做法，不算问题。在父仓库里会列出它的子模块，子模块要单独检查（`-C lib`）。
 
 ## 用法
 
@@ -106,12 +106,12 @@ git-rescue --dry-run        # 只显示，不修改；--json 用于脚本；-C �
 }
 ```
 
-每一步是 git 的参数；只有一个、带空格的字符串的那一步需要你自己做，`[":remove-index-lock"]` 由 git-rescue 自己完成。`timeline --json` 输出 `{format, version, events}`，`lost --json` 输出 `{format, version, reflogOnly, unreachable, staged}`，`find --json` 输出 `{format, version, text, matches}`，`undo --list --json` 输出 `{format, version, backups}`。
+每一步是 git 的参数。如果一步只是一个带空格的字符串，就需要你自己做；`[":remove-index-lock"]` 由 git-rescue 自己完成。`timeline --json` 输出 `{format, version, events}`，`lost --json` 输出 `{format, version, reflogOnly, unreachable, staged}`，`find --json` 输出 `{format, version, text, matches}`，`undo --list --json` 输出 `{format, version, backups}`。
 
 ## 放心运行
 
 - **不问就不改任何东西。** 报告以及 `timeline`、`lost`、`find` 都只读。修复会先列出确切的 git 命令，你同意后才执行（或者加 `--yes`）。
-- **每次修复之前都会备份** 所有分支、HEAD 和你没提交的修改（像 `git stash` 那样，但不动你的文件），存在 `refs/rescue/<时间>/` 下：这是普通的 ref，`git gc` 不会删，用普通的 git 命令就能读。文件处于冲突状态、git 没法做快照时，改动过的文件会原样复制到 `.git/rescue-files/<时间>/`。`git-rescue undo` 只撤回这次修复改动的东西（它移动、新建或删除的分支，以及 HEAD），之后又变过的东西不动，并提供恢复当时没提交的修改。放弃了 rebase 或 merge 之后再 undo，HEAD 保持不动：操作没法恢复，你在其中做的修改在 `.git/rescue-files/` 里。未跟踪的文件不会保存，任何修复都不会动它们。undo 使用备份记录前会先检查：不是 git-rescue 写出的样子的记录会被忽略。
+- **每次修复之前都会备份** 所有分支、HEAD 和你没提交的修改（像 `git stash` 那样，但不动你的文件），存在 `refs/rescue/<时间>/` 下：这是普通的 ref，`git gc` 不会删，用普通的 git 命令就能读。文件处于冲突状态、git 没法做快照时，改动过的文件会原样复制到 `.git/rescue-files/<时间>/`。`git-rescue undo` 只撤回这次修复改动的东西（它移动、新建或删除的分支，以及 HEAD），之后又变过的东西不动，并提供恢复当时没提交的修改。放弃了 rebase 或 merge 之后再 undo，HEAD 保持不动：操作没法恢复，你在其中做的修改在 `.git/rescue-files/` 里。未跟踪的文件不会保存，任何修复都不会动它们。undo 使用备份记录前会先检查它是不是 git-rescue 写的，不是就忽略。
 - **选项都标了风险**：*safe*（用一条普通 git 命令就能撤销），*careful*（会移动分支或改动你的文件，事先已备份），*you do it*（需要你自己操作，比如解决冲突）。
 - `restore` 只会写到新文件名。
 - 完全本地：不联网、不收集数据、没有任何依赖。

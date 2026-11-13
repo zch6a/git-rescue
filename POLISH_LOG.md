@@ -182,3 +182,9 @@ The plan in PROGRESS.md: give the finished tools an entry point for AI coding as
 ## Lockfile - 2026-11-13
 
 `package-lock.json` recorded the 3 download URLs from this machine's npm mirror (`registry.npmmirror.com`) instead of the public registry, so CI and anyone installing fetched from a mirror they never chose. Every `resolved` URL now points at `registry.npmjs.org`; nothing else changed (same versions, and the integrity hashes still match because the tarballs are identical). Checked: `npm ci --ignore-scripts`, `npm run check` and the tests pass; `npm audit` against the public registry finds 0 vulnerabilities.
+
+### 2026-11-14 — Chinese README: AI tone
+
+- 4 places: two long attributives with stacked 的 split into clauses (which steps you run yourself; how undo checks a backup record), and semicolons joining independent sentences split into full stops in two places (the 放心试 bullet, the submodule note).
+- The checks follow the findings of lieflat-less-ai-tone (shiujan, CC BY-NC 4.0); its findings applied, its text not copied.
+- Left as they are: technical contrasts (提交按改动内容比较，而不是按 id; 实际状态，而不是根据时间去猜), lists that must be complete (what is backed up, commands not to run, what is not counted as lost), colon-led lists, the exit-code line.
